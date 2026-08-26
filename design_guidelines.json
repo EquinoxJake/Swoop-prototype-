@@ -1,0 +1,166 @@
+{
+  "app_name": "Swoop",
+  "personality": "4 Tactile / Playful LIGHT",
+  "personality_one_liner": "Energetic, touchable, and highly legible campus mobility experience with chunky controls, floating panels, and an outdoor-friendly warm palette.",
+  "color": {
+    "surface": "#F7F5F0",
+    "onSurface": "#1A1A1A",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#1A1A1A",
+    "surfaceTertiary": "#EAE6DF",
+    "onSurfaceTertiary": "#1A1A1A",
+    "surfaceInverse": "#222222",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#F3A712",
+    "brandPrimary": "#F3A712",
+    "onBrandPrimary": "#111111",
+    "brandSecondary": "#20B26C",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#FCE5BA",
+    "onBrandTertiary": "#734F08",
+    "success": "#20B26C",
+    "onSuccess": "#FFFFFF",
+    "warning": "#E69109",
+    "onWarning": "#FFFFFF",
+    "error": "#D9381E",
+    "onError": "#FFFFFF",
+    "info": "#1A1A1A",
+    "onInfo": "#FFFFFF",
+    "border": "#EAE6DF",
+    "borderStrong": "#D1C9BC",
+    "divider": "#EAE6DF"
+  },
+  "typography": {
+    "displayFontFamily": "Outfit",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous map-safe margins. Floating map controls should sit at least 24pt away from screen edges. Elements within bottom sheets should use md and lg gaps.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "pill": 999
+  },
+  "shadow_tier": "2",
+  "navigation": "stack_only",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use heavy glassmorphism for floating map controls (FABs, filter pills) to keep the map visible underneath.",
+      "Use glass for the top fade under the status bar.",
+      "Use a glass header when viewing the active ride details layered over the live map."
+    ],
+    "dont's": [
+      "Never blur the bottom sheet background containing critical ride details or QR code scanning surfaces."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Live Map (Home)",
+      "purpose": "A full-bleed map for users to instantly locate and select nearby scooters.",
+      "states": {
+        "loading": "Map skeleton or branded spinner overlay on blank surface.",
+        "empty": "Map empty state showing 'No scooters nearby' with an illustration and a 'Notify Me' CTA.",
+        "error": "A toast over the map: 'Unable to connect to location services' with a Retry button."
+      },
+      "layout": "Full-bleed map canvas. Top layer includes a floating user profile/wallet pill (top left) and filter pill (top right). Bottom layer contains a large, primary 'Scan to Ride' CTA floating pill dead center, flanked by a 'Center Location' FAB. Map pins use clustered markers that expand on zoom, displaying battery percent."
+    },
+    {
+      "name": "Scooter Detail Bottom Sheet",
+      "purpose": "Provides instant context on a tapped scooter so the user can commit to unlocking.",
+      "states": {
+        "loading": "Skeleton text blocks for battery and range.",
+        "empty": "Not applicable; only triggered by valid scooter tap.",
+        "error": "Error fetching scooter status with an inline retry icon."
+      },
+      "layout": "Pops up from the bottom when a map pin is tapped. Shows an image of the scooter, large battery indicator pill (color-coded using success/warning tokens), pricing (e.g., $1 unlock + 0.35/min), and a chunky, tactile 'Slide to Unlock' or 'Unlock Scooter' button at the bottom. The CTA must be anchored."
+    },
+    {
+      "name": "QR Scanner",
+      "purpose": "Allows users to directly rent a scooter by scanning its handlebar QR code.",
+      "states": {
+        "loading": "Overlay spinner while validating the scanned code.",
+        "empty": "Black screen if camera permission denied, prompting to 'Enable Camera in Settings'.",
+        "error": "Flash error message 'Invalid QR code' on screen."
+      },
+      "layout": "Full screen camera view. 80% screen cutout with a subtle border. Flashlight toggle FAB floating below the cutout. Cancel X button at top left (glass pill)."
+    },
+    {
+      "name": "Active Ride",
+      "purpose": "Extremely legible dashboard displaying ongoing trip metrics while riding.",
+      "states": {
+        "loading": "Starting ride... connecting via BLE.",
+        "empty": "Not applicable.",
+        "error": "Connection lost. Reconnecting to scooter..."
+      },
+      "layout": "Map in the background heavily dimmed. A large elevated sheet covers the bottom 40% featuring oversized typography: Live Timer (XX:XX), Distance, and Running Cost. A massive, tactile 'End Ride' button colored in surfaceInverse (Deep Charcoal) at the bottom."
+    },
+    {
+      "name": "Payment & Receipt",
+      "purpose": "Confirm trip completion, display total cost, and confirm successful payment.",
+      "states": {
+        "loading": "Processing payment...",
+        "empty": "Not applicable.",
+        "error": "Payment failed. Please update your payment method."
+      },
+      "layout": "Centered receipt card over surface background. Shows start/end times, total distance, final cost, and an illustration of the scooter. Primary CTA 'Done' to return to map."
+    }
+  ],
+  "images": {
+    "scooter_asset": {
+      "url": "https://images.unsplash.com/photo-1657008846502-e03a84f49baa?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwyfHxlbGVjdHJpYyUyMHNjb290ZXIlMjBpc29sYXRlZHxlbnwwfHx8fDE3ODc3NTg4NjF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Isolated electric scooter for vehicle detail screens"
+    },
+    "qr_placeholder": {
+      "url": "https://images.unsplash.com/photo-1600147131759-880e94a6185f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1OTV8MHwxfHNlYXJjaHwyfHxxciUyMGNvZGUlMjBzY2FubmVyJTIwZ3JhcGhpY3xlbnwwfHx8fDE3ODc3NTg4NjF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Graphic depicting scanning a QR code"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the Tactile / Playful LIGHT (4) rules: chunky components, overlapping rounded forms, pill buttons, and controlled asymmetry for visual interest.",
+    "Banned Colors: ALL blues (including navy/indigo) and purples are strictly prohibited. The theme relies on 'Athletic Gold/Ochre' (#F3A712) for brand identity to resonate with the Eagles campus vibe, paired with deep charcoal for text and CTAs.",
+    "Map implementation is the hero: ensure map controls (profile, filters, 'Scan to Ride') float over the map using glassmorphism. They should not sit in a rigid header/footer structure.",
+    "Always place primary CTAs in the lower 1/3 (thumb zone) inside a safe-area anchored container.",
+    "The QR scanner must include permission handling and a clear visual bounding box (cutout).",
+    "For the active ride screen, prioritize glanceability. Use the 'displayFontFamily' (Outfit) for the large timer and cost metrics, making them unmissably large.",
+    "BLE connection simulation (unlocking) should trigger a haptic pulse and use a tactile 'Slide to Unlock' or chunky pressable button.",
+    "All bottom sheets (like the scooter detail) must use @gorhom/bottom-sheet with generous internal padding (xl: 24pt)."
+  ],
+  "haptics": {
+    "map_pin_tap": "light",
+    "scan_button_press": "medium",
+    "qr_scan_success": "success",
+    "slide_to_unlock_commit": "heavy",
+    "end_ride_press": "heavy",
+    "payment_success": "success"
+  }
+}
