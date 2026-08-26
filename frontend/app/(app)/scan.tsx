@@ -35,9 +35,19 @@ export default function Scan() {
     try {
       const scoot = await api.getScooter(code);
       if (scoot.status !== "available") throw new Error("Scooter not available");
+      // Ensure card on file
+      const pms = await api.listPaymentMethods();
+      if (pms.length === 0) {
+        router.replace(`/(app)/payment-method?reserve_after=${encodeURIComponent(code)}`);
+        return;
+      }
       const ride = await api.reserveRide(code);
       router.replace(`/(app)/ride?ride_id=${ride.ride_id}`);
     } catch (e: any) {
+      if (String(e?.message || "").toLowerCase().includes("payment method")) {
+        router.replace(`/(app)/payment-method?reserve_after=${encodeURIComponent(code)}`);
+        return;
+      }
       setErr(e.message || "Invalid QR");
       setTimeout(() => { setErr(null); setScanned(false); }, 1500);
     }

@@ -80,7 +80,14 @@ export default function Profile() {
 
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Account</Text>
-          <SectionRow icon="card-outline" title="Payment methods" sub="Stripe · test mode (MOCKED)" colors={colors} styles={styles} />
+          <Pressable style={styles.rowBtn} onPress={() => router.push("/(app)/payment-method")} testID="profile-payment-methods">
+            <View style={styles.rowIcon}><Ionicons name="card-outline" size={20} color={colors.onSurface} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Payment methods</Text>
+              <Text style={styles.rowSub}>Manage cards on file</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+          </Pressable>
           <SectionRow icon="location-outline" title="Service area" sub="Georgia Southern · Savannah" colors={colors} styles={styles} />
           <SectionRow icon="shield-checkmark-outline" title="Safety" sub="Ride tips & rules" colors={colors} styles={styles} />
           <SectionRow icon="help-circle-outline" title="Support" sub="Get help fast" colors={colors} styles={styles} last />

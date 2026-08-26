@@ -1,0 +1,33 @@
+{
+  "summary": "Backend testing for Swoop's new pricing flow: card-on-file required + $1.00 unlock on reserve + $0.20/mile GPS-based mileage auto-charged on ride end. Rewrote /app/backend/tests/test_swoop_backend.py (stale) into a single pytest class of 15 sequential tests covering health, payment-methods CRUD, ride lifecycle (reserve/start/end), charge recording, and 402 enforcement. All 15/15 tests pass against the preview backend. Also directly verified via DB that the charges collection records both an 'unlock' (100 cents) and 'mileage' (21 cents) row linked to the same payment_method_id and ride_id. No 'awaiting_payment' status observed. Card validation (letters and short numbers) properly rejects with 400. Default-card swap on delete works.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_swoop_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py sanitize_ride relies on Ride model with datetime fields but doesn't strip legacy fields (e.g. old 'awaiting_payment' rides). The startup migration handles this by rewriting statuses to 'completed', which is good.",
+    "reserve_ride charges the unlock fee BEFORE inserting the ride and then back-links the charge with update_many on {ride_id: None}. This is racy if the same user reserves twice concurrently, but current code also rejects concurrent reservations via the active-ride check, so acceptable.",
+    "end_ride computes mileage_cents = ceil(miles * PER_MILE_CENTS). For distance_m=1610 this yields 21 (ceil of 20.008), for 1609 it would be 20. Behavior matches spec allowing 20 or 21.",
+    "mock_charge is clearly labeled MOCKED (only writes a charges row) \u2014 matches the review request's mocked_apis list."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_swoop_backend.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Fresh signup ridertest+{ts}_{uuid8}@example.com used per test run; scooters seeded automatically on backend startup. Ridertest users leave a small residual (completed ride + used scooter) but this does not affect subsequent runs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend tests are pinned to a single class TestSwoopFullFlow because pytest.ini forces `-n 2 --dist loadscope`. If splitting into more classes, ensure each class provisions its own user + card since session-scoped fixtures are per-xdist-worker. Preview URL: EXPO_PUBLIC_BACKEND_URL from /app/frontend/.env. Demo user demo@swoop.app / swoop1234 exists but has residual data \u2014 tests always sign up a fresh ridertest+ account.",
+  "rca_of_issue": "N/A \u2014 no bugs found. Initial test run failed only because two xdist workers with loadscope tried to run session-scoped signup fixture with the same millisecond timestamp \u2014 fixed by adding uuid to the test email and consolidating all sequential ride steps into one class."
+}

@@ -39,7 +39,8 @@ api = APIRouter(prefix="/api")
 
 # Pricing (cents)
 UNLOCK_CENTS = 100
-PER_MINUTE_CENTS = 35
+PER_MILE_CENTS = 20
+METERS_PER_MILE = 1609.344
 
 
 def now_utc() -> datetime:
@@ -98,7 +99,7 @@ class Scooter(BaseModel):
     battery: int
     status: Literal["available", "reserved", "in_use", "offline"]
     model: str
-    price_per_min_cents: int = PER_MINUTE_CENTS
+    price_per_mile_cents: int = PER_MILE_CENTS
     unlock_fee_cents: int = UNLOCK_CENTS
 
 
@@ -107,26 +108,50 @@ class Ride(BaseModel):
     user_id: str
     scooter_id: str
     scooter_code: str
-    status: Literal["reserved", "active", "awaiting_payment", "paid", "cancelled"]
+    status: Literal["reserved", "active", "completed", "cancelled"]
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     minutes: int = 0
     distance_m: int = 0
+    miles: float = 0.0
+    unlock_charged_cents: int = 0
+    mileage_charged_cents: int = 0
     amount_cents: int = 0
+    payment_method_id: Optional[str] = None
     start_lat: Optional[float] = None
     start_lng: Optional[float] = None
     end_lat: Optional[float] = None
     end_lng: Optional[float] = None
     created_at: datetime
-    stripe_session_id: Optional[str] = None
     paid_at: Optional[datetime] = None
 
 
-class MockCheckoutResponse(BaseModel):
-    checkout_url: str
-    session_id: str
+class PaymentMethod(BaseModel):
+    payment_method_id: str
+    user_id: str
+    brand: str
+    last4: str
+    exp_month: int
+    exp_year: int
+    is_default: bool
+    created_at: datetime
+
+
+class AddPaymentMethodRequest(BaseModel):
+    number: str  # full card number (we only keep last4)
+    exp_month: int
+    exp_year: int
+    cvc: str  # never stored
+
+
+class ChargeRecord(BaseModel):
+    charge_id: str
+    user_id: str
+    ride_id: Optional[str] = None
     amount_cents: int
-    minutes: int
+    kind: Literal["unlock", "mileage"]
+    payment_method_id: str
+    created_at: datetime
 
 
 # ============ AUTH HELPERS ============
@@ -196,6 +221,15 @@ async def ensure_indexes_and_seed():
     await db.scooters.create_index("code", unique=True)
     await db.rides.create_index("ride_id", unique=True)
     await db.rides.create_index([("user_id", 1), ("created_at", -1)])
+    await db.payment_methods.create_index("payment_method_id", unique=True)
+    await db.payment_methods.create_index([("user_id", 1), ("is_default", 1)])
+    await db.charges.create_index("charge_id", unique=True)
+    await db.charges.create_index([("user_id", 1), ("created_at", -1)])
+
+    # Migrate legacy ride statuses ('awaiting_payment' -> 'completed', 'paid' -> 'completed')
+    await db.rides.update_many({"status": {"$in": ["awaiting_payment", "paid"]}}, {"$set": {"status": "completed"}})
+    # Migrate legacy scooter field
+    await db.scooters.update_many({"price_per_min_cents": {"$exists": True}}, {"$unset": {"price_per_min_cents": ""}})
 
     # Seed scooters around Georgia Southern University (Statesboro) and a few in Savannah
     count = await db.scooters.count_documents({})
@@ -217,7 +251,7 @@ async def ensure_indexes_and_seed():
                 "battery": rng.randint(35, 100),
                 "status": "available",
                 "model": "Swoop One",
-                "price_per_min_cents": PER_MINUTE_CENTS,
+                "price_per_mile_cents": PER_MILE_CENTS,
                 "unlock_fee_cents": UNLOCK_CENTS,
                 "created_at": now_utc(),
             })
@@ -232,7 +266,7 @@ async def ensure_indexes_and_seed():
                 "battery": rng.randint(50, 100),
                 "status": "available",
                 "model": "Swoop One",
-                "price_per_min_cents": PER_MINUTE_CENTS,
+                "price_per_mile_cents": PER_MILE_CENTS,
                 "unlock_fee_cents": UNLOCK_CENTS,
                 "created_at": now_utc(),
             })
@@ -408,7 +442,7 @@ async def seed_scooters_near(body: SeedNearRequest):
             "battery": rng.randint(40, 100),
             "status": "available",
             "model": "Swoop One",
-            "price_per_min_cents": PER_MINUTE_CENTS,
+            "price_per_mile_cents": PER_MILE_CENTS,
             "unlock_fee_cents": UNLOCK_CENTS,
             "created_at": now_utc(),
         })
@@ -416,6 +450,99 @@ async def seed_scooters_near(body: SeedNearRequest):
         await db.scooters.insert_many(new_docs)
     all_nearby = nearby + [{k: v for k, v in d.items() if k != "_id"} for d in new_docs]
     return [Scooter(**d) for d in all_nearby]
+
+
+# ============ PAYMENT METHODS (MOCKED) ============
+def detect_brand(number: str) -> str:
+    n = number.replace(" ", "")
+    if n.startswith("4"): return "Visa"
+    if n.startswith(("51", "52", "53", "54", "55", "22", "23", "24", "25", "26", "27")): return "Mastercard"
+    if n.startswith(("34", "37")): return "Amex"
+    if n.startswith("6"): return "Discover"
+    return "Card"
+
+
+@api.get("/payment-methods", response_model=List[PaymentMethod])
+async def list_payment_methods(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    docs = await db.payment_methods.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(20)
+    return [PaymentMethod(**{**d, "created_at": ensure_aware(d["created_at"])}) for d in docs]
+
+
+@api.post("/payment-methods", response_model=PaymentMethod)
+async def add_payment_method(body: AddPaymentMethodRequest, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    number = body.number.replace(" ", "").replace("-", "")
+    if len(number) < 13 or not number.isdigit():
+        raise HTTPException(400, "Invalid card number")
+    if body.exp_month < 1 or body.exp_month > 12:
+        raise HTTPException(400, "Invalid expiration month")
+    if len(body.cvc) < 3:
+        raise HTTPException(400, "Invalid CVC")
+    # If this is user's first card, make it default
+    existing_count = await db.payment_methods.count_documents({"user_id": user["user_id"]})
+    pm = {
+        "payment_method_id": f"pm_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "brand": detect_brand(number),
+        "last4": number[-4:],
+        "exp_month": body.exp_month,
+        "exp_year": body.exp_year,
+        "is_default": existing_count == 0,
+        "created_at": now_utc(),
+    }
+    await db.payment_methods.insert_one(pm)
+    return PaymentMethod(**pm)
+
+
+@api.delete("/payment-methods/{payment_method_id}")
+async def delete_payment_method(payment_method_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    pm = await db.payment_methods.find_one({"payment_method_id": payment_method_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not pm:
+        raise HTTPException(404, "Not found")
+    await db.payment_methods.delete_one({"payment_method_id": payment_method_id})
+    # If deleted default, promote the newest remaining card
+    if pm.get("is_default"):
+        remaining = await db.payment_methods.find_one({"user_id": user["user_id"]}, {"_id": 0}, sort=[("created_at", -1)])
+        if remaining:
+            await db.payment_methods.update_one({"payment_method_id": remaining["payment_method_id"]}, {"$set": {"is_default": True}})
+    return {"ok": True}
+
+
+@api.post("/payment-methods/{payment_method_id}/default", response_model=PaymentMethod)
+async def set_default_payment_method(payment_method_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    pm = await db.payment_methods.find_one({"payment_method_id": payment_method_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not pm:
+        raise HTTPException(404, "Not found")
+    await db.payment_methods.update_many({"user_id": user["user_id"]}, {"$set": {"is_default": False}})
+    await db.payment_methods.update_one({"payment_method_id": payment_method_id}, {"$set": {"is_default": True}})
+    pm["is_default"] = True
+    return PaymentMethod(**{**pm, "created_at": ensure_aware(pm["created_at"])})
+
+
+async def get_default_payment_method(user_id: str) -> Optional[dict]:
+    pm = await db.payment_methods.find_one({"user_id": user_id, "is_default": True}, {"_id": 0})
+    if pm:
+        return pm
+    return await db.payment_methods.find_one({"user_id": user_id}, {"_id": 0}, sort=[("created_at", -1)])
+
+
+async def mock_charge(user_id: str, ride_id: Optional[str], amount_cents: int, kind: str, payment_method_id: str) -> str:
+    """MOCKED Stripe charge. In production this would call stripe.PaymentIntent.create()."""
+    charge_id = f"ch_{uuid.uuid4().hex[:14]}"
+    await db.charges.insert_one({
+        "charge_id": charge_id,
+        "user_id": user_id,
+        "ride_id": ride_id,
+        "amount_cents": amount_cents,
+        "kind": kind,
+        "payment_method_id": payment_method_id,
+        "created_at": now_utc(),
+    })
+    logger.info("[MOCK CHARGE] user=%s amount=%d kind=%s pm=%s", user_id, amount_cents, kind, payment_method_id)
+    return charge_id
 
 
 # ============ RIDES ============
@@ -431,7 +558,7 @@ class EndRideRequest(BaseModel):
     ride_id: str
     end_lat: Optional[float] = None
     end_lng: Optional[float] = None
-    distance_m: Optional[int] = None
+    distance_m: Optional[float] = None
 
 
 def sanitize_ride(doc: dict) -> Ride:
@@ -445,14 +572,21 @@ def sanitize_ride(doc: dict) -> Ride:
 @api.post("/rides/reserve", response_model=Ride)
 async def reserve_ride(body: ReserveRequest, authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
+    # Enforce card-on-file
+    pm = await get_default_payment_method(user["user_id"])
+    if not pm:
+        raise HTTPException(status_code=402, detail="Add a payment method before unlocking a scooter")
     scooter = await db.scooters.find_one({"code": body.scooter_code.upper()}, {"_id": 0})
     if not scooter:
         raise HTTPException(404, "Scooter not found")
     if scooter["status"] != "available":
         raise HTTPException(409, "Scooter not available")
-    active = await db.rides.find_one({"user_id": user["user_id"], "status": {"$in": ["reserved", "active", "awaiting_payment"]}}, {"_id": 0})
+    active = await db.rides.find_one({"user_id": user["user_id"], "status": {"$in": ["reserved", "active"]}}, {"_id": 0})
     if active:
         raise HTTPException(409, "You already have an active ride")
+
+    # Charge unlock fee immediately (MOCKED)
+    await mock_charge(user["user_id"], None, UNLOCK_CENTS, "unlock", pm["payment_method_id"])
 
     ride_id = f"ride_{uuid.uuid4().hex[:12]}"
     ride_doc = {
@@ -463,12 +597,21 @@ async def reserve_ride(body: ReserveRequest, authorization: Optional[str] = Head
         "status": "reserved",
         "minutes": 0,
         "distance_m": 0,
-        "amount_cents": 0,
+        "miles": 0.0,
+        "unlock_charged_cents": UNLOCK_CENTS,
+        "mileage_charged_cents": 0,
+        "amount_cents": UNLOCK_CENTS,
+        "payment_method_id": pm["payment_method_id"],
         "start_lat": scooter["lat"],
         "start_lng": scooter["lng"],
         "created_at": now_utc(),
     }
     await db.rides.insert_one(ride_doc)
+    # Link the unlock charge to this ride
+    await db.charges.update_many(
+        {"user_id": user["user_id"], "kind": "unlock", "ride_id": None},
+        {"$set": {"ride_id": ride_id}},
+    )
     await db.scooters.update_one({"scooter_id": scooter["scooter_id"]}, {"$set": {"status": "reserved"}})
     return sanitize_ride(ride_doc)
 
@@ -505,21 +648,47 @@ async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(N
     started_at = ensure_aware(ride["started_at"])
     seconds = max(0, (ended_at - started_at).total_seconds())
     minutes = max(1, math.ceil(seconds / 60))
-    amount = UNLOCK_CENTS + minutes * PER_MINUTE_CENTS
-    distance_m = int(body.distance_m or (minutes * 220))  # rough default
+    # GPS-tracked distance from client; fallback to zero if unavailable
+    distance_m = float(body.distance_m) if body.distance_m is not None else 0.0
+    miles = distance_m / METERS_PER_MILE
+    # Round mileage cost UP by hundredth of a mile to be fair-ish
+    mileage_cents = max(0, math.ceil(miles * PER_MILE_CENTS))
+    total_cents = ride.get("unlock_charged_cents", UNLOCK_CENTS) + mileage_cents
+
+    # Auto-charge mileage to user's default card (MOCKED)
+    pm_id = ride.get("payment_method_id")
+    if not pm_id:
+        pm = await get_default_payment_method(user["user_id"])
+        pm_id = pm["payment_method_id"] if pm else None
+    if pm_id and mileage_cents > 0:
+        await mock_charge(user["user_id"], ride["ride_id"], mileage_cents, "mileage", pm_id)
 
     update = {
-        "status": "awaiting_payment",
+        "status": "completed",
         "ended_at": ended_at,
+        "paid_at": ended_at,
         "minutes": minutes,
-        "amount_cents": amount,
-        "distance_m": distance_m,
+        "distance_m": int(distance_m),
+        "miles": round(miles, 3),
+        "mileage_charged_cents": mileage_cents,
+        "amount_cents": total_cents,
     }
     if body.end_lat is not None and body.end_lng is not None:
         update["end_lat"] = body.end_lat
         update["end_lng"] = body.end_lng
 
     await db.rides.update_one({"ride_id": body.ride_id}, {"$set": update})
+
+    # Free scooter + update its position/battery
+    scooter_updates = {"status": "available"}
+    if body.end_lat is not None and body.end_lng is not None:
+        scooter_updates["lat"] = body.end_lat
+        scooter_updates["lng"] = body.end_lng
+    scooter = await db.scooters.find_one({"scooter_id": ride["scooter_id"]}, {"_id": 0})
+    if scooter:
+        scooter_updates["battery"] = max(5, scooter["battery"] - max(1, minutes))
+    await db.scooters.update_one({"scooter_id": ride["scooter_id"]}, {"$set": scooter_updates})
+
     ride.update(update)
     return sanitize_ride(ride)
 
@@ -528,7 +697,7 @@ async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(N
 async def get_active_ride(authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
     ride = await db.rides.find_one(
-        {"user_id": user["user_id"], "status": {"$in": ["reserved", "active", "awaiting_payment"]}},
+        {"user_id": user["user_id"], "status": {"$in": ["reserved", "active"]}},
         {"_id": 0},
     )
     if not ride:
@@ -550,66 +719,6 @@ async def get_ride(ride_id: str, authorization: Optional[str] = Header(None)):
     if not doc:
         raise HTTPException(404, "Ride not found")
     return sanitize_ride(doc)
-
-
-# ============ PAYMENTS (MOCKED) ============
-class MockCheckoutRequest(BaseModel):
-    ride_id: str
-
-
-@api.post("/payments/mock-checkout", response_model=MockCheckoutResponse)
-async def create_mock_checkout(body: MockCheckoutRequest, authorization: Optional[str] = Header(None)):
-    """
-    MOCKED payment session. In production this would call
-    stripe.checkout.Session.create() and return the real hosted URL.
-    """
-    user = await get_current_user(authorization)
-    ride = await db.rides.find_one({"ride_id": body.ride_id, "user_id": user["user_id"]}, {"_id": 0})
-    if not ride:
-        raise HTTPException(404, "Ride not found")
-    if ride["status"] != "awaiting_payment":
-        raise HTTPException(409, "Ride not awaiting payment")
-    session_id = f"mock_sess_{uuid.uuid4().hex[:16]}"
-    await db.rides.update_one({"ride_id": body.ride_id}, {"$set": {"stripe_session_id": session_id}})
-    return MockCheckoutResponse(
-        checkout_url=f"swoop://mock-checkout/{session_id}",  # in real Stripe this would be checkout.stripe.com/...
-        session_id=session_id,
-        amount_cents=ride["amount_cents"],
-        minutes=ride["minutes"],
-    )
-
-
-@api.post("/payments/mock-confirm", response_model=Ride)
-async def confirm_mock_payment(body: MockCheckoutRequest, authorization: Optional[str] = Header(None)):
-    """MOCKED payment confirmation — simulates a successful Stripe webhook."""
-    user = await get_current_user(authorization)
-    ride = await db.rides.find_one({"ride_id": body.ride_id, "user_id": user["user_id"]}, {"_id": 0})
-    if not ride:
-        raise HTTPException(404, "Ride not found")
-    if ride["status"] == "paid":
-        return sanitize_ride(ride)
-    if ride["status"] != "awaiting_payment":
-        raise HTTPException(409, "Ride not awaiting payment")
-
-    paid_at = now_utc()
-    await db.rides.update_one(
-        {"ride_id": body.ride_id},
-        {"$set": {"status": "paid", "paid_at": paid_at}},
-    )
-    # Free scooter and update its battery/position
-    updates = {"status": "available"}
-    if ride.get("end_lat") is not None and ride.get("end_lng") is not None:
-        updates["lat"] = ride["end_lat"]
-        updates["lng"] = ride["end_lng"]
-    # drain battery a bit
-    scooter = await db.scooters.find_one({"scooter_id": ride["scooter_id"]}, {"_id": 0})
-    if scooter:
-        updates["battery"] = max(5, scooter["battery"] - max(1, ride.get("minutes", 1)))
-    await db.scooters.update_one({"scooter_id": ride["scooter_id"]}, {"$set": updates})
-
-    ride["status"] = "paid"
-    ride["paid_at"] = paid_at
-    return sanitize_ride(ride)
 
 
 app.include_router(api)

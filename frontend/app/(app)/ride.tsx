@@ -1,14 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, Ride } from "@/src/lib/api";
 import { spacing, radius, shadow } from "@/src/lib/theme";
 import { useTheme } from "@/src/lib/theme-context";
 
 type BleStep = "idle" | "searching" | "connecting" | "unlocking" | "connected" | "error";
+
+const METERS_PER_MILE = 1609.344;
+const UNLOCK_CENTS = 100;
+const PER_MILE_CENTS = 20;
+
+function haversineMeters(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+  const R = 6371000;
+  const p1 = (a.lat * Math.PI) / 180;
+  const p2 = (b.lat * Math.PI) / 180;
+  const dp = ((b.lat - a.lat) * Math.PI) / 180;
+  const dl = ((b.lng - a.lng) * Math.PI) / 180;
+  const c = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(c));
+}
 
 export default function RideScreen() {
   const insets = useSafeAreaInsets();
@@ -19,9 +34,13 @@ export default function RideScreen() {
   const [ble, setBle] = useState<BleStep>("searching");
   const [showBleModal, setShowBleModal] = useState(true);
   const [elapsed, setElapsed] = useState(0);
-  const [distance, setDistance] = useState(0);
+  const [distanceM, setDistanceM] = useState(0);
+  const [gpsAvailable, setGpsAvailable] = useState<boolean | null>(null);
   const [ending, setEnding] = useState(false);
+  const lastPos = useRef<{ lat: number; lng: number } | null>(null);
+  const lastCoords = useRef<{ lat: number; lng: number } | null>(null);
   const timerRef = useRef<any>(null);
+  const watchSub = useRef<Location.LocationSubscription | null>(null);
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   useEffect(() => {
@@ -29,6 +48,7 @@ export default function RideScreen() {
     (async () => { try { const r = await api.getRide(ride_id); setRide(r); } catch (e) { console.warn(e); } })();
   }, [ride_id]);
 
+  // BLE simulation → active
   useEffect(() => {
     if (!ride) return;
     if (ride.status === "active") { setBle("connected"); setShowBleModal(false); return; }
@@ -47,25 +67,63 @@ export default function RideScreen() {
     return () => { cancelled = true; };
   }, [ride?.ride_id, ride?.status]);
 
+  // GPS tracking during active ride
+  useEffect(() => {
+    if (!ride || ride.status !== "active") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") { setGpsAvailable(false); return; }
+        setGpsAvailable(true);
+        const first = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        if (cancelled) return;
+        lastPos.current = { lat: first.coords.latitude, lng: first.coords.longitude };
+        lastCoords.current = lastPos.current;
+        watchSub.current = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, distanceInterval: 3, timeInterval: 1000 },
+          (loc) => {
+            const cur = { lat: loc.coords.latitude, lng: loc.coords.longitude };
+            if (lastPos.current) {
+              const step = haversineMeters(lastPos.current, cur);
+              // Ignore GPS jitter <2m and unrealistic >300m jumps between samples
+              if (step >= 2 && step < 300) {
+                setDistanceM((d) => d + step);
+              }
+            }
+            lastPos.current = cur;
+            lastCoords.current = cur;
+          },
+        );
+      } catch (e) { setGpsAvailable(false); }
+    })();
+    return () => { cancelled = true; watchSub.current?.remove(); watchSub.current = null; };
+  }, [ride?.status]);
+
+  // Ride timer
   useEffect(() => {
     if (!ride || ride.status !== "active" || !ride.started_at) return;
     const start = new Date(ride.started_at).getTime();
-    const tick = () => {
-      const now = Date.now();
-      const secs = Math.floor((now - start) / 1000);
-      setElapsed(secs); setDistance(Math.round(secs * 4.5));
-    };
+    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
     tick(); timerRef.current = setInterval(tick, 1000);
     return () => clearInterval(timerRef.current);
   }, [ride?.status, ride?.started_at]);
 
-  const price = ride ? (100 + Math.max(1, Math.ceil(elapsed / 60)) * 35) / 100 : 0;
+  const miles = distanceM / METERS_PER_MILE;
+  const mileageCents = Math.max(0, Math.ceil(miles * PER_MILE_CENTS));
+  const totalCents = UNLOCK_CENTS + mileageCents;
 
   const onEnd = async () => {
     if (!ride) return;
     setEnding(true); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    try { const updated = await api.endRide(ride.ride_id, undefined, undefined, distance); router.replace(`/(app)/receipt?ride_id=${updated.ride_id}`); }
-    catch (e: any) { alert(e.message || "Failed to end ride"); } finally { setEnding(false); }
+    watchSub.current?.remove(); watchSub.current = null;
+    try {
+      const endLat = lastCoords.current?.lat;
+      const endLng = lastCoords.current?.lng;
+      const updated = await api.endRide(ride.ride_id, Math.round(distanceM), endLat, endLng);
+      router.replace(`/(app)/receipt?ride_id=${updated.ride_id}`);
+    } catch (e: any) { alert(e.message || "Failed to end ride"); }
+    finally { setEnding(false); }
   };
 
   if (!ride) {
@@ -80,7 +138,14 @@ export default function RideScreen() {
           <View style={styles.pulse} />
           <Text style={styles.statusText}>Riding · {ride.scooter_code}</Text>
         </View>
+        {gpsAvailable === false && (
+          <View style={[styles.statusPill, { marginTop: spacing.sm, backgroundColor: colors.warning }]}>
+            <Ionicons name="warning" size={14} color={colors.onWarning} />
+            <Text style={[styles.statusText, { color: colors.onWarning }]}>GPS off — distance won't track</Text>
+          </View>
+        )}
       </View>
+
       <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
         <View style={styles.metricsWrap}>
           <View style={styles.timerBox}>
@@ -89,15 +154,15 @@ export default function RideScreen() {
           </View>
           <View style={styles.smallMetrics}>
             <View style={styles.smallMetric}>
-              <Ionicons name="map-outline" size={18} color={colors.muted} />
-              <Text style={styles.smallValue} testID="ride-distance">{(distance / 1609).toFixed(2)} mi</Text>
-              <Text style={styles.smallLabel}>Distance</Text>
+              <Ionicons name="location-outline" size={18} color={colors.muted} />
+              <Text style={styles.smallValue} testID="ride-distance">{miles.toFixed(2)} mi</Text>
+              <Text style={styles.smallLabel}>GPS distance</Text>
             </View>
             <View style={styles.divider} />
             <View style={styles.smallMetric}>
-              <Ionicons name="pricetag-outline" size={18} color={colors.muted} />
-              <Text style={styles.smallValue} testID="ride-cost">${price.toFixed(2)}</Text>
-              <Text style={styles.smallLabel}>Running cost</Text>
+              <Ionicons name="cash-outline" size={18} color={colors.muted} />
+              <Text style={styles.smallValue} testID="ride-cost">${(totalCents / 100).toFixed(2)}</Text>
+              <Text style={styles.smallLabel}>$1 + $0.20/mi</Text>
             </View>
           </View>
         </View>
@@ -123,7 +188,7 @@ export default function RideScreen() {
               {ble === "error" && "Connection failed"}
             </Text>
             <Text style={styles.modalSub}>
-              {ble === "connected" ? "Kick off to start moving." : ble === "error" ? "Please try again" : "Simulated BLE handshake (MOCKED)"}
+              {ble === "connected" ? "$1.00 unlock fee charged. Mileage will be billed as you ride." : ble === "error" ? "Please try again" : "Simulated BLE handshake (MOCKED)"}
             </Text>
             {ble !== "connected" && ble !== "error" && <ActivityIndicator size="small" color={colors.brand} style={{ marginTop: spacing.md }} />}
             {ble === "error" && (

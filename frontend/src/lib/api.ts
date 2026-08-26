@@ -31,6 +31,14 @@ export async function getToken(): Promise<string | null> {
   return getStoredToken();
 }
 
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, opts: RequestInit = {}, auth = true): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -43,11 +51,8 @@ async function request<T>(path: string, opts: RequestInit = {}, auth = true): Pr
   const res = await fetch(`${BASE}/api${path}`, { ...opts, headers });
   if (!res.ok) {
     let msg = res.statusText;
-    try {
-      const j = await res.json();
-      msg = j.detail || msg;
-    } catch {}
-    throw new Error(msg);
+    try { const j = await res.json(); msg = j.detail || msg; } catch {}
+    throw new ApiError(res.status, msg);
   }
   if (res.status === 204) return undefined as any;
   const text = await res.text();
@@ -55,16 +60,54 @@ async function request<T>(path: string, opts: RequestInit = {}, auth = true): Pr
   return JSON.parse(text);
 }
 
-// ---- Auth ----
-export type User = {
+export type User = { user_id: string; email: string; name?: string; picture?: string; created_at: string };
+export type AuthResponse = { session_token: string; user: User };
+
+export type PaymentMethod = {
+  payment_method_id: string;
   user_id: string;
-  email: string;
-  name?: string;
-  picture?: string;
+  brand: string;
+  last4: string;
+  exp_month: number;
+  exp_year: number;
+  is_default: boolean;
   created_at: string;
 };
 
-export type AuthResponse = { session_token: string; user: User };
+export type Scooter = {
+  scooter_id: string;
+  code: string;
+  lat: number;
+  lng: number;
+  battery: number;
+  status: "available" | "reserved" | "in_use" | "offline";
+  model: string;
+  price_per_mile_cents: number;
+  unlock_fee_cents: number;
+};
+
+export type Ride = {
+  ride_id: string;
+  user_id: string;
+  scooter_id: string;
+  scooter_code: string;
+  status: "reserved" | "active" | "completed" | "cancelled";
+  started_at?: string;
+  ended_at?: string;
+  minutes: number;
+  distance_m: number;
+  miles: number;
+  unlock_charged_cents: number;
+  mileage_charged_cents: number;
+  amount_cents: number;
+  payment_method_id?: string;
+  start_lat?: number;
+  start_lng?: number;
+  end_lat?: number;
+  end_lng?: number;
+  created_at: string;
+  paid_at?: string;
+};
 
 export const api = {
   signup: (email: string, password: string, name?: string) =>
@@ -85,12 +128,24 @@ export const api = {
       body: JSON.stringify({ lat, lng, radius_m, count }),
     }),
 
+  // Payment methods
+  listPaymentMethods: () => request<PaymentMethod[]>("/payment-methods"),
+  addPaymentMethod: (number: string, exp_month: number, exp_year: number, cvc: string) =>
+    request<PaymentMethod>("/payment-methods", {
+      method: "POST",
+      body: JSON.stringify({ number, exp_month, exp_year, cvc }),
+    }),
+  deletePaymentMethod: (id: string) =>
+    request<{ ok: boolean }>(`/payment-methods/${id}`, { method: "DELETE" }),
+  setDefaultPaymentMethod: (id: string) =>
+    request<PaymentMethod>(`/payment-methods/${id}/default`, { method: "POST" }),
+
   // Rides
   reserveRide: (scooter_code: string) =>
     request<Ride>("/rides/reserve", { method: "POST", body: JSON.stringify({ scooter_code }) }),
   startRide: (ride_id: string) =>
     request<Ride>("/rides/start", { method: "POST", body: JSON.stringify({ ride_id }) }),
-  endRide: (ride_id: string, end_lat?: number, end_lng?: number, distance_m?: number) =>
+  endRide: (ride_id: string, distance_m: number, end_lat?: number, end_lng?: number) =>
     request<Ride>("/rides/end", {
       method: "POST",
       body: JSON.stringify({ ride_id, end_lat, end_lng, distance_m }),
@@ -98,49 +153,4 @@ export const api = {
   getActiveRide: () => request<Ride | null>("/rides/active"),
   listRides: () => request<Ride[]>("/rides"),
   getRide: (ride_id: string) => request<Ride>(`/rides/${ride_id}`),
-
-  // Payments (MOCKED)
-  createMockCheckout: (ride_id: string) =>
-    request<MockCheckout>("/payments/mock-checkout", { method: "POST", body: JSON.stringify({ ride_id }) }),
-  confirmMockPayment: (ride_id: string) =>
-    request<Ride>("/payments/mock-confirm", { method: "POST", body: JSON.stringify({ ride_id }) }),
-};
-
-export type Scooter = {
-  scooter_id: string;
-  code: string;
-  lat: number;
-  lng: number;
-  battery: number;
-  status: "available" | "reserved" | "in_use" | "offline";
-  model: string;
-  price_per_min_cents: number;
-  unlock_fee_cents: number;
-};
-
-export type Ride = {
-  ride_id: string;
-  user_id: string;
-  scooter_id: string;
-  scooter_code: string;
-  status: "reserved" | "active" | "awaiting_payment" | "paid" | "cancelled";
-  started_at?: string;
-  ended_at?: string;
-  minutes: number;
-  distance_m: number;
-  amount_cents: number;
-  start_lat?: number;
-  start_lng?: number;
-  end_lat?: number;
-  end_lng?: number;
-  created_at: string;
-  stripe_session_id?: string;
-  paid_at?: string;
-};
-
-export type MockCheckout = {
-  checkout_url: string;
-  session_id: string;
-  amount_cents: number;
-  minutes: number;
 };

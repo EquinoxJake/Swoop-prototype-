@@ -94,8 +94,22 @@ export default function MapScreen() {
   const onUnlock = async () => {
     if (!selected) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // Check for payment method first — reserve endpoint will return 402 if missing
+    try {
+      const pms = await api.listPaymentMethods();
+      if (pms.length === 0) {
+        router.push(`/(app)/payment-method?reserve_after=${encodeURIComponent(selected.code)}`);
+        return;
+      }
+    } catch {}
     try { const ride = await api.reserveRide(selected.code); router.push(`/(app)/ride?ride_id=${ride.ride_id}`); }
-    catch (e: any) { alert(e.message || "Could not reserve"); }
+    catch (e: any) {
+      if (String(e?.message || "").toLowerCase().includes("payment method")) {
+        router.push(`/(app)/payment-method?reserve_after=${encodeURIComponent(selected.code)}`);
+        return;
+      }
+      alert(e.message || "Could not reserve");
+    }
   };
   const centerOnUser = () => {
     if (userLoc && mapRef.current) mapRef.current.animateToRegion?.({ latitude: userLoc.lat, longitude: userLoc.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 }, 500);
@@ -219,7 +233,7 @@ function ListItem({ scooter, userLoc, onPress, colors, styles }: any) {
 }
 
 function ScooterDetail({ scooter, userLoc, onUnlock, onBack, colors, styles }: any) {
-  const price = `$${(scooter.unlock_fee_cents / 100).toFixed(2)} + $${(scooter.price_per_min_cents / 100).toFixed(2)}/min`;
+  const price = `$${(scooter.unlock_fee_cents / 100).toFixed(2)} + $${(scooter.price_per_mile_cents / 100).toFixed(2)}/mi`;
   const dist = distanceMi(userLoc, scooter);
   const distStr = dist === null ? "" : dist < 0.1 ? `${Math.round(dist * 5280)} ft away` : `${dist.toFixed(1)} mi away`;
   return (

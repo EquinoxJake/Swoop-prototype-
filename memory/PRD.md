@@ -1,45 +1,67 @@
 # Swoop — PRD
 
 ## Vision
-Bird/Lime-style scooter rental micromobility app launching at **Georgia Southern University** (Statesboro, GA) and expanding to **Savannah, GA**. Riders find nearby scooters on a live GPS map, scan a QR code on the handlebar, unlock via Bluetooth, ride, and pay per minute.
-
-## Users
-- College students at Georgia Southern
-- Downtown Savannah residents and tourists (later)
+Bird/Lime-style scooter rental micromobility app launching at **Georgia Southern University** (Statesboro, GA) and expanding to **Savannah, GA**. Riders find nearby scooters on a live GPS map, scan a QR code on the handlebar, unlock via Bluetooth, ride, and are billed per real GPS mile.
 
 ## Core features (MVP)
-1. **Authentication** — Email/password + Emergent Google Auth
-2. **Live map** — react-native-maps with clustered pins showing battery %; user location + centering
-3. **QR scan** — expo-camera scans handlebar QR (`SW-XXXX` format); manual code entry fallback
-4. **Scooter detail** — Bottom sheet with battery, price, range, unlock CTA
-5. **BLE handshake (MOCKED)** — Simulated search/connect/unlock animation with haptics; ready to swap in real `react-native-ble-plx` for the custom board later
-6. **Active ride** — Live timer, distance, running cost, End ride
-7. **Payment (Stripe MOCKED)** — Backend calculates cost server-side ($1 unlock + $0.35/min); mock checkout + confirmation; ready to swap to real Stripe Checkout
-8. **Receipt** — Trip summary, itemized cost, mark ride paid
-9. **Ride history** — Chronological list of past rides
-10. **Profile** — User details, sign out, safety/support/service area sections
+1. **Auth** — Email/password + Emergent Google Auth
+2. **Live map** — full-bleed react-native-maps with pins showing battery %
+3. **Persistent swipe-up scooter list** — peek/mid/full sheet; sorted by distance; search by code
+4. **Dummy scooters spawn around user's GPS location** (idempotent seed via `/api/scooters/seed-near`)
+5. **QR scan** — expo-camera scans SW-XXXX codes; manual entry fallback
+6. **Scooter detail** — bottom sheet with battery, range, price, unlock CTA
+7. **Card-on-file required** — Reserving requires a saved card (`POST /api/rides/reserve` returns 402 if none). If missing, user is auto-routed to `/(app)/payment-method` and returned to the ride when saved.
+8. **BLE handshake (MOCKED)** — Simulated search/connect/unlock with haptics
+9. **$1.00 unlock fee charged upfront** when the ride is reserved (mocked Stripe → `charges` table)
+10. **GPS mileage tracking** — `expo-location.watchPositionAsync` with high accuracy + 3m/1s interval; distance accumulated via haversine, ignoring <2m jitter and >300m jumps
+11. **$0.20/mile billed on ride end (auto-charged)** — `POST /api/rides/end` computes `mileage_cents = ceil(miles × 20)` and charges the default card. Ride jumps straight to `completed`; no separate Pay button.
+12. **Receipt** — Trip summary + itemized charges + card that was billed
+13. **Ride history + Profile** with dark mode toggle and Payment methods manager
 
 ## Pricing (server-authoritative)
-- Unlock: $1.00
-- Per minute: $0.35
-- Minimum: 1 minute
+- Unlock: **$1.00** (charged on reserve)
+- Per mile: **$0.20** (charged on end)
+- Min mileage: none — if GPS reports 0m the mileage is $0
 
-## Architecture
-- **Backend**: FastAPI + MongoDB (motor async)
-- **Frontend**: Expo Router (stack navigation), react-native-maps, @gorhom/bottom-sheet, expo-camera, expo-haptics, expo-blur
-- **Auth**: Bearer session_token in expo-secure-store (mobile) / localStorage (web); 7-day TTL sessions
-- **Data model**: users, user_sessions, scooters (seeded ~24 at Georgia Southern + Savannah), rides
+## Data model
+- `users`, `user_sessions`
+- `scooters` (seeded 24 baseline + auto-seeded near each user)
+- `rides` — status: `reserved → active → completed | cancelled`
+- `payment_methods` — mocked card (brand, last4, exp)
+- `charges` — one row per mock Stripe charge (`unlock` or `mileage`)
 
-## Ride state machine
-`reserved → active → awaiting_payment → paid`
+## Theming
+- Brand: `#2E7BFF` (blue) light, `#4C93FF` dark
+- Light/Dark/System toggle in Profile → Appearance, persisted via `@/src/utils/storage`
 
 ## Mocked components (to be replaced later)
-- **BLE**: `/app/frontend/app/(app)/ride.tsx` — simulated searching/connecting/unlocking phases. Wire to `react-native-ble-plx` when the custom board is ready.
-- **Stripe**: `/app/backend/server.py` `create_mock_checkout` + `confirm_mock_payment`. Replace with `stripe.checkout.Session.create()` + webhook per playbook.
+- **BLE** in `ride.tsx` — swap to `react-native-ble-plx` for the custom board
+- **Stripe** in `server.py` (`mock_charge`) — swap to `stripe.PaymentIntent.create()` with a saved `payment_method` and `off_session=true` for auto-charges. Use Stripe SetupIntents to save cards to `payment_methods` instead of storing digits in DB.
 
-## Next steps
-- Real Stripe Checkout (backend already computes amount server-side)
-- Real BLE via `react-native-ble-plx` (needs dev build, not Expo Go)
-- Business dashboard for the custom board data (battery %, GPS, payment status per unit)
-- Push notifications for low battery / found-my-scooter
-- Referral / campus promo codes
+## Backend endpoints
+```
+POST   /api/auth/signup           { email, password, name? }
+POST   /api/auth/login            { email, password }
+POST   /api/auth/session          { session_id }               # Emergent Google
+GET    /api/auth/me
+POST   /api/auth/logout
+
+GET    /api/scooters
+GET    /api/scooters/{code}
+POST   /api/scooters/seed-near    { lat, lng, radius_m, count }
+
+GET    /api/payment-methods
+POST   /api/payment-methods       { number, exp_month, exp_year, cvc }
+DELETE /api/payment-methods/{id}
+POST   /api/payment-methods/{id}/default
+
+POST   /api/rides/reserve         { scooter_code }             # 402 if no card
+POST   /api/rides/start           { ride_id }
+POST   /api/rides/end             { ride_id, distance_m, end_lat?, end_lng? }
+GET    /api/rides
+GET    /api/rides/active
+GET    /api/rides/{ride_id}
+```
+
+## Test coverage
+- `/app/backend/tests/test_swoop_backend.py` — 15/15 passing (card guard, unlock charge, mileage charge, delete/default, invalid card 400, etc.)
