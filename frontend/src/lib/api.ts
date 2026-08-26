@@ -105,6 +105,8 @@ export type Ride = {
   start_lng?: number;
   end_lat?: number;
   end_lng?: number;
+  route?: number[][];
+  paused_seconds?: number;
   created_at: string;
   paid_at?: string;
 };
@@ -145,10 +147,10 @@ export const api = {
     request<Ride>("/rides/reserve", { method: "POST", body: JSON.stringify({ scooter_code }) }),
   startRide: (ride_id: string) =>
     request<Ride>("/rides/start", { method: "POST", body: JSON.stringify({ ride_id }) }),
-  endRide: (ride_id: string, distance_m: number, end_lat?: number, end_lng?: number) =>
+  endRide: (ride_id: string, distance_m: number, end_lat?: number, end_lng?: number, route?: number[][], paused_seconds?: number) =>
     request<Ride>("/rides/end", {
       method: "POST",
-      body: JSON.stringify({ ride_id, end_lat, end_lng, distance_m }),
+      body: JSON.stringify({ ride_id, end_lat, end_lng, distance_m, route, paused_seconds }),
     }),
   getActiveRide: () => request<Ride | null>("/rides/active"),
   listRides: () => request<Ride[]>("/rides"),

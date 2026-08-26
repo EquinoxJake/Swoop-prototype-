@@ -122,6 +122,8 @@ class Ride(BaseModel):
     start_lng: Optional[float] = None
     end_lat: Optional[float] = None
     end_lng: Optional[float] = None
+    route: List[List[float]] = Field(default_factory=list)  # [[lat, lng], ...]
+    paused_seconds: int = 0
     created_at: datetime
     paid_at: Optional[datetime] = None
 
@@ -559,6 +561,8 @@ class EndRideRequest(BaseModel):
     end_lat: Optional[float] = None
     end_lng: Optional[float] = None
     distance_m: Optional[float] = None
+    route: Optional[List[List[float]]] = None
+    paused_seconds: Optional[int] = None
 
 
 def sanitize_ride(doc: dict) -> Ride:
@@ -676,6 +680,15 @@ async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(N
     if body.end_lat is not None and body.end_lng is not None:
         update["end_lat"] = body.end_lat
         update["end_lng"] = body.end_lng
+    if body.route:
+        # Thin to max 200 points to keep documents small
+        route = body.route
+        if len(route) > 200:
+            step = max(1, math.ceil(len(route) / 200))
+            route = route[::step]
+        update["route"] = [[round(p[0], 6), round(p[1], 6)] for p in route if len(p) >= 2]
+    if body.paused_seconds is not None:
+        update["paused_seconds"] = max(0, int(body.paused_seconds))
 
     await db.rides.update_one({"ride_id": body.ride_id}, {"$set": update})
 

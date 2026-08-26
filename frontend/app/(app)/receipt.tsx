@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api, Ride, PaymentMethod } from "@/src/lib/api";
 import { spacing, radius, shadow } from "@/src/lib/theme";
 import { useTheme } from "@/src/lib/theme-context";
+import RouteMap from "@/src/components/RouteMap";
 
 export default function Receipt() {
   const insets = useSafeAreaInsets();
@@ -50,9 +51,25 @@ export default function Receipt() {
           <Text style={styles.sub}>Thanks for riding Swoop</Text>
         </View>
 
+        {ride.route && ride.route.length >= 2 && (
+          <View style={{ gap: spacing.xs }}>
+            <Text style={styles.routeLabel}>Your route</Text>
+            <RouteMap route={ride.route} height={200} />
+          </View>
+        )}
+
         <View style={styles.card}>
           <Row label="Duration" value={`${ride.minutes} min`} styles={styles} />
           <Row label="Distance (GPS)" value={`${miles} mi`} styles={styles} />
+          {(ride.paused_seconds ?? 0) > 0 && (
+            <Row
+              label="Paused (not billed)"
+              value={formatDuration(ride.paused_seconds || 0)}
+              styles={styles}
+              colors={colors}
+              muted
+            />
+          )}
           <Row label="Scooter" value={ride.scooter_code} styles={styles} />
           <View style={styles.hr} />
           <Row label="Unlock fee" value={`$${unlock}`} muted styles={styles} colors={colors} />
@@ -94,9 +111,17 @@ function Row({ label, value, muted, styles, colors }: any) {
   );
 }
 
+function formatDuration(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s}s`;
+}
+
 const makeStyles = (c: any) => StyleSheet.create({
   loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: c.surface },
   container: { padding: spacing.xl, gap: spacing.lg },
+  routeLabel: { fontSize: 13, fontWeight: "700", color: c.muted, textTransform: "uppercase", letterSpacing: 0.5, marginLeft: spacing.xs },
   header: { alignItems: "center", gap: spacing.sm, marginBottom: spacing.md },
   badge: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", ...shadow.card },
   title: { fontSize: 28, fontWeight: "800", color: c.onSurface, letterSpacing: -0.5 },

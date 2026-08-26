@@ -194,7 +194,89 @@ class TestSwoopFullFlow:
         assert cards[0]["is_default"] is True
         TestSwoopFullFlow.pm_id = cards[0]["payment_method_id"]
 
-    def test_14_delete_last_card_then_reserve_402_again(self, api_client, auth_headers):
+    # ---- NEW: route playback + paused_seconds ----
+    def _do_full_ride(self, api_client, auth_headers, end_body_extra: dict):
+        """Reserve → start → end with extra body fields. Returns final ride dict."""
+        scooter = _pick_available_scooter(api_client)
+        rv = api_client.post(f"{API}/rides/reserve", headers=auth_headers, json={"scooter_code": scooter["code"]})
+        assert rv.status_code == 200, rv.text
+        rid = rv.json()["ride_id"]
+        st = api_client.post(f"{API}/rides/start", headers=auth_headers, json={"ride_id": rid})
+        assert st.status_code == 200, st.text
+        body = {"ride_id": rid, "distance_m": 500, "end_lat": 32.4201, "end_lng": -81.7801}
+        body.update(end_body_extra)
+        en = api_client.post(f"{API}/rides/end", headers=auth_headers, json=body)
+        assert en.status_code == 200, en.text
+        return en.json()
+
+    def test_14_end_ride_stores_route_and_paused_seconds(self, api_client, auth_headers):
+        # Small route (5 points), positive paused_seconds
+        route = [
+            [32.4171000001, -81.7784000001],
+            [32.4172, -81.7785],
+            [32.4173, -81.7786],
+            [32.4174, -81.7787],
+            [32.4175, -81.7788],
+        ]
+        ride = self._do_full_ride(api_client, auth_headers, {"route": route, "paused_seconds": 42})
+        assert ride["status"] == "completed"
+        assert "route" in ride and isinstance(ride["route"], list)
+        assert len(ride["route"]) == 5
+        # Coords rounded to 6 decimals
+        for orig, echoed in zip(route, ride["route"]):
+            assert echoed == [round(orig[0], 6), round(orig[1], 6)]
+        assert ride["paused_seconds"] == 42
+        # Verify via GET (persistence)
+        got = api_client.get(f"{API}/rides/{ride['ride_id']}", headers=auth_headers).json()
+        assert got["route"] == ride["route"]
+        assert got["paused_seconds"] == 42
+
+    def test_15_end_ride_thins_large_route_to_at_most_200_points(self, api_client, auth_headers):
+        # 300 points along a small path
+        route = [[32.4171 + i * 0.00001, -81.7784 + i * 0.00001] for i in range(300)]
+        ride = self._do_full_ride(api_client, auth_headers, {"route": route, "paused_seconds": 0})
+        assert ride["status"] == "completed"
+        assert 1 <= len(ride["route"]) <= 200, f"route not thinned: {len(ride['route'])}"
+        # All points must be 6-decimal rounded lists of len 2
+        for p in ride["route"]:
+            assert isinstance(p, list) and len(p) == 2
+            assert p == [round(p[0], 6), round(p[1], 6)]
+        assert ride["paused_seconds"] == 0
+
+    def test_16_end_ride_filters_malformed_route_elements(self, api_client, auth_headers):
+        # Mix of valid pairs, empty inner lists, and single-element lists — invalid must be dropped
+        route = [
+            [32.4171, -81.7784],
+            [],                        # dropped (len<2)
+            [32.4172, -81.7785],
+            [32.4173],                 # dropped (len<2)
+            [32.4174, -81.7786, 99.0], # kept (len>=2, extra ignored)
+        ]
+        ride = self._do_full_ride(api_client, auth_headers, {"route": route})
+        # Only elements with len>=2 kept; each kept element must be [lat, lng] (2 floats, 6dp)
+        assert len(ride["route"]) == 3
+        assert ride["route"][0] == [32.4171, -81.7784]
+        assert ride["route"][1] == [32.4172, -81.7785]
+        assert ride["route"][2][:2] == [32.4174, -81.7786]
+        # Each stored entry must be exactly 2 floats
+        for p in ride["route"]:
+            assert len(p) == 2
+
+    def test_17_end_ride_clamps_negative_paused_seconds_to_zero(self, api_client, auth_headers):
+        ride = self._do_full_ride(api_client, auth_headers, {"paused_seconds": -50})
+        assert ride["paused_seconds"] == 0
+        # Verify via GET
+        got = api_client.get(f"{API}/rides/{ride['ride_id']}", headers=auth_headers).json()
+        assert got["paused_seconds"] == 0
+
+    def test_18_end_ride_without_route_or_paused_defaults(self, api_client, auth_headers):
+        # Backwards compatibility: no route/paused_seconds sent → defaults preserved
+        ride = self._do_full_ride(api_client, auth_headers, {})
+        assert ride["route"] == []
+        assert ride["paused_seconds"] == 0
+
+    # ---- delete-last-card guard (kept last since it removes all cards) ----
+    def test_19_delete_last_card_then_reserve_402_again(self, api_client, auth_headers):
         cards = api_client.get(f"{API}/payment-methods", headers=auth_headers).json()
         for c in cards:
             r = api_client.delete(f"{API}/payment-methods/{c['payment_method_id']}", headers=auth_headers)

@@ -37,9 +37,16 @@ export default function RideScreen() {
   const [distanceM, setDistanceM] = useState(0);
   const [gpsAvailable, setGpsAvailable] = useState<boolean | null>(null);
   const [ending, setEnding] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [pausedSeconds, setPausedSeconds] = useState(0);
   const lastPos = useRef<{ lat: number; lng: number } | null>(null);
   const lastCoords = useRef<{ lat: number; lng: number } | null>(null);
+  const lastMovedAtRef = useRef<number>(Date.now());
+  const routeRef = useRef<number[][]>([]);
+  const pausedAccumRef = useRef<number>(0);
+  const pausedStartRef = useRef<number | null>(null);
   const timerRef = useRef<any>(null);
+  const idleCheckRef = useRef<any>(null);
   const watchSub = useRef<Location.LocationSubscription | null>(null);
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
@@ -78,8 +85,11 @@ export default function RideScreen() {
         setGpsAvailable(true);
         const first = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
         if (cancelled) return;
-        lastPos.current = { lat: first.coords.latitude, lng: first.coords.longitude };
-        lastCoords.current = lastPos.current;
+        const p0 = { lat: first.coords.latitude, lng: first.coords.longitude };
+        lastPos.current = p0;
+        lastCoords.current = p0;
+        routeRef.current.push([p0.lat, p0.lng]);
+        lastMovedAtRef.current = Date.now();
         watchSub.current = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, distanceInterval: 3, timeInterval: 1000 },
           (loc) => {
@@ -89,6 +99,14 @@ export default function RideScreen() {
               // Ignore GPS jitter <2m and unrealistic >300m jumps between samples
               if (step >= 2 && step < 300) {
                 setDistanceM((d) => d + step);
+                lastMovedAtRef.current = Date.now();
+                routeRef.current.push([cur.lat, cur.lng]);
+                // Coming out of a pause
+                if (pausedStartRef.current !== null) {
+                  pausedAccumRef.current += Math.floor((Date.now() - pausedStartRef.current) / 1000);
+                  pausedStartRef.current = null;
+                  setPaused(false);
+                }
               }
             }
             lastPos.current = cur;
@@ -98,6 +116,27 @@ export default function RideScreen() {
       } catch (e) { setGpsAvailable(false); }
     })();
     return () => { cancelled = true; watchSub.current?.remove(); watchSub.current = null; };
+  }, [ride?.status]);
+
+  // Auto-pause detector: if no movement for 60s, mark paused
+  useEffect(() => {
+    if (!ride || ride.status !== "active") return;
+    idleCheckRef.current = setInterval(() => {
+      const idleSecs = Math.floor((Date.now() - lastMovedAtRef.current) / 1000);
+      if (idleSecs >= 60 && pausedStartRef.current === null) {
+        pausedStartRef.current = Date.now() - 60_000; // count from when they stopped moving
+        setPaused(true);
+        Haptics.selectionAsync();
+      }
+      // Update live paused seconds counter
+      if (pausedStartRef.current !== null) {
+        const live = pausedAccumRef.current + Math.floor((Date.now() - pausedStartRef.current) / 1000);
+        setPausedSeconds(live);
+      } else {
+        setPausedSeconds(pausedAccumRef.current);
+      }
+    }, 1000);
+    return () => clearInterval(idleCheckRef.current);
   }, [ride?.status]);
 
   // Ride timer
@@ -117,10 +156,23 @@ export default function RideScreen() {
     if (!ride) return;
     setEnding(true); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     watchSub.current?.remove(); watchSub.current = null;
+    clearInterval(idleCheckRef.current);
+    // Finalize pause accumulator
+    let totalPaused = pausedAccumRef.current;
+    if (pausedStartRef.current !== null) {
+      totalPaused += Math.floor((Date.now() - pausedStartRef.current) / 1000);
+    }
     try {
       const endLat = lastCoords.current?.lat;
       const endLng = lastCoords.current?.lng;
-      const updated = await api.endRide(ride.ride_id, Math.round(distanceM), endLat, endLng);
+      const updated = await api.endRide(
+        ride.ride_id,
+        Math.round(distanceM),
+        endLat,
+        endLng,
+        routeRef.current,
+        totalPaused,
+      );
       router.replace(`/(app)/receipt?ride_id=${updated.ride_id}`);
     } catch (e: any) { alert(e.message || "Failed to end ride"); }
     finally { setEnding(false); }
@@ -135,9 +187,17 @@ export default function RideScreen() {
       <View style={styles.mapBg} />
       <View style={[styles.topBar, { top: insets.top + spacing.md }]}>
         <View style={styles.statusPill}>
-          <View style={styles.pulse} />
-          <Text style={styles.statusText}>Riding · {ride.scooter_code}</Text>
+          <View style={[styles.pulse, paused && { backgroundColor: colors.warning }]} />
+          <Text style={styles.statusText}>{paused ? `Paused · ${ride.scooter_code}` : `Riding · ${ride.scooter_code}`}</Text>
         </View>
+        {paused && (
+          <View style={[styles.statusPill, { marginTop: spacing.sm, backgroundColor: colors.warning }]}>
+            <Ionicons name="pause-circle" size={14} color={colors.onWarning} />
+            <Text style={[styles.statusText, { color: colors.onWarning }]}>
+              Not moving — you won't be charged
+            </Text>
+          </View>
+        )}
         {gpsAvailable === false && (
           <View style={[styles.statusPill, { marginTop: spacing.sm, backgroundColor: colors.warning }]}>
             <Ionicons name="warning" size={14} color={colors.onWarning} />
