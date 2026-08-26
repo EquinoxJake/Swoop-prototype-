@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView, Image } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,6 +15,7 @@ export default function Receipt() {
   const { ride_id } = useLocalSearchParams<{ ride_id: string }>();
   const [ride, setRide] = useState<Ride | null>(null);
   const [card, setCard] = useState<PaymentMethod | null>(null);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
@@ -28,6 +29,10 @@ export default function Receipt() {
           const pms = await api.listPaymentMethods();
           const c = pms.find((p) => p.payment_method_id === r.payment_method_id);
           if (c) setCard(c);
+        }
+        if (r.end_photo_path) {
+          const url = await api.fileUrl(r.end_photo_path);
+          setPhotoUrl(url);
         }
       } catch (e: any) { setErr(e.message); }
     })();
@@ -58,6 +63,21 @@ export default function Receipt() {
           </View>
         )}
 
+        {photoUrl && (
+          <View style={{ gap: spacing.xs }}>
+            <Text style={styles.routeLabel}>Parking photo</Text>
+            <View style={styles.photoWrap}>
+              <Image source={{ uri: photoUrl } as any} style={styles.photo} resizeMode="cover" />
+              {ride.parking_flagged && (
+                <View style={styles.flagChip}>
+                  <Ionicons name="warning" size={14} color="#fff" />
+                  <Text style={styles.flagChipText}>Flagged</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
         <View style={styles.card}>
           <Row label="Duration" value={`${ride.minutes} min`} styles={styles} />
           <Row label="Distance (GPS)" value={`${miles} mi`} styles={styles} />
@@ -74,6 +94,9 @@ export default function Receipt() {
           <View style={styles.hr} />
           <Row label="Unlock fee" value={`$${unlock}`} muted styles={styles} colors={colors} />
           <Row label={`Mileage (${miles} mi × $0.20)`} value={`$${mileage}`} muted styles={styles} colors={colors} />
+          {(ride.fee_charged_cents ?? 0) > 0 && (
+            <Row label="Improper parking fee" value={`$${((ride.fee_charged_cents || 0) / 100).toFixed(2)}`} muted styles={styles} colors={colors} />
+          )}
           <View style={styles.hr} />
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Total charged</Text>
@@ -122,6 +145,10 @@ const makeStyles = (c: any) => StyleSheet.create({
   loading: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: c.surface },
   container: { padding: spacing.xl, gap: spacing.lg },
   routeLabel: { fontSize: 13, fontWeight: "700", color: c.muted, textTransform: "uppercase", letterSpacing: 0.5, marginLeft: spacing.xs },
+  photoWrap: { position: "relative", borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: c.border, backgroundColor: c.surfaceTertiary },
+  photo: { width: "100%", aspectRatio: 3 / 4 },
+  flagChip: { position: "absolute", top: 10, right: 10, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: c.error, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill },
+  flagChipText: { color: "#fff", fontWeight: "800", fontSize: 11, textTransform: "uppercase" },
   header: { alignItems: "center", gap: spacing.sm, marginBottom: spacing.md },
   badge: { width: 68, height: 68, borderRadius: 34, alignItems: "center", justifyContent: "center", ...shadow.card },
   title: { fontSize: 28, fontWeight: "800", color: c.onSurface, letterSpacing: -0.5 },

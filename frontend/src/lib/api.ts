@@ -99,6 +99,7 @@ export type Ride = {
   miles: number;
   unlock_charged_cents: number;
   mileage_charged_cents: number;
+  fee_charged_cents?: number;
   amount_cents: number;
   payment_method_id?: string;
   start_lat?: number;
@@ -107,14 +108,36 @@ export type Ride = {
   end_lng?: number;
   route?: number[][];
   paused_seconds?: number;
+  end_photo_path?: string;
+  parking_zone_id?: string;
+  parking_ok?: boolean | null;
+  parking_flagged?: boolean;
+  parking_flag_reason?: string;
   created_at: string;
   paid_at?: string;
 };
 
+export type ParkingZone = {
+  zone_id: string;
+  name: string;
+  kind: "bike_rack" | "designated" | "no_park";
+  lat: number;
+  lng: number;
+  radius_m: number;
+  created_at: string;
+};
+
+export type ParkingCheck = {
+  ok: boolean;
+  reason?: string;
+  zone?: ParkingZone;
+  nearest_allowed?: ParkingZone;
+  nearest_allowed_distance_m?: number;
+};
+
 export const api = {
   signup: (email: string, password: string, name?: string) =>
-    request<AuthResponse>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }, false),
-  login: (email: string, password: string) =>
+    request<AuthResponse>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }, false),  login: (email: string, password: string) =>
     request<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false),
   googleSession: (session_id: string) =>
     request<AuthResponse>("/auth/session", { method: "POST", body: JSON.stringify({ session_id }) }, false),
@@ -147,12 +170,56 @@ export const api = {
     request<Ride>("/rides/reserve", { method: "POST", body: JSON.stringify({ scooter_code }) }),
   startRide: (ride_id: string) =>
     request<Ride>("/rides/start", { method: "POST", body: JSON.stringify({ ride_id }) }),
-  endRide: (ride_id: string, distance_m: number, end_lat?: number, end_lng?: number, route?: number[][], paused_seconds?: number) =>
+  endRide: (ride_id: string, distance_m: number, end_lat?: number, end_lng?: number, route?: number[][], paused_seconds?: number, end_photo_path?: string, parking_override = false) =>
     request<Ride>("/rides/end", {
       method: "POST",
-      body: JSON.stringify({ ride_id, end_lat, end_lng, distance_m, route, paused_seconds }),
+      body: JSON.stringify({ ride_id, end_lat, end_lng, distance_m, route, paused_seconds, end_photo_path, parking_override }),
     }),
   getActiveRide: () => request<Ride | null>("/rides/active"),
   listRides: () => request<Ride[]>("/rides"),
   getRide: (ride_id: string) => request<Ride>(`/rides/${ride_id}`),
+
+  // Parking
+  listParkingZones: (lat?: number, lng?: number, radius_m?: number) => {
+    const q = new URLSearchParams();
+    if (lat !== undefined) q.set("lat", String(lat));
+    if (lng !== undefined) q.set("lng", String(lng));
+    if (radius_m !== undefined) q.set("radius_m", String(radius_m));
+    return request<ParkingZone[]>(`/parking-zones${q.toString() ? "?" + q.toString() : ""}`);
+  },
+  parkingCheck: (lat: number, lng: number) =>
+    request<ParkingCheck>("/parking/check", { method: "POST", body: JSON.stringify({ lat, lng }) }),
+  flagImproperParking: (ride_id: string, reason: string) =>
+    request<Ride>(`/rides/${ride_id}/flag-improper-parking`, { method: "POST", body: JSON.stringify({ reason }) }),
+
+  // Photo upload — multipart. Split by platform per Object Storage playbook.
+  uploadParkingPhoto: async (ride_id: string, uri: string, contentType = "image/jpeg"): Promise<{ path: string; size: number }> => {
+    const token = await getStoredToken();
+    const form = new FormData();
+    const name = `parking_${Date.now()}.jpg`;
+    if (Platform.OS === "web") {
+      const blob = await (await fetch(uri)).blob();
+      form.append("file", blob, name);
+    } else {
+      // @ts-ignore native FormData shape
+      form.append("file", { uri, name, type: contentType } as any);
+    }
+    const res = await fetch(`${BASE}/api/uploads/parking-photo?ride_id=${encodeURIComponent(ride_id)}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: form as any,
+    });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try { const j = await res.json(); msg = j.detail || msg; } catch {}
+      throw new ApiError(res.status, msg);
+    }
+    return res.json();
+  },
+
+  // Get a signed URL for displaying an uploaded file (works cross-platform)
+  fileUrl: async (path: string) => {
+    const token = await getStoredToken();
+    return `${BASE}/api/files/${path}?token=${encodeURIComponent(token || "")}`;
+  },
 };

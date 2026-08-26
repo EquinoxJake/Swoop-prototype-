@@ -162,20 +162,18 @@ export default function RideScreen() {
     if (pausedStartRef.current !== null) {
       totalPaused += Math.floor((Date.now() - pausedStartRef.current) / 1000);
     }
-    try {
-      const endLat = lastCoords.current?.lat;
-      const endLng = lastCoords.current?.lng;
-      const updated = await api.endRide(
-        ride.ride_id,
-        Math.round(distanceM),
-        endLat,
-        endLng,
-        routeRef.current,
-        totalPaused,
-      );
-      router.replace(`/(app)/receipt?ride_id=${updated.ride_id}`);
-    } catch (e: any) { alert(e.message || "Failed to end ride"); }
-    finally { setEnding(false); }
+    const endLat = lastCoords.current?.lat;
+    const endLng = lastCoords.current?.lng;
+    const params = new URLSearchParams({
+      ride_id: ride.ride_id,
+      distance_m: String(Math.round(distanceM)),
+      paused_seconds: String(totalPaused),
+      route_json: JSON.stringify(routeRef.current),
+    });
+    if (endLat !== undefined) params.set("end_lat", String(endLat));
+    if (endLng !== undefined) params.set("end_lng", String(endLng));
+    router.replace(`/(app)/parking-check?${params.toString()}`);
+    setEnding(false);
   };
 
   if (!ride) {

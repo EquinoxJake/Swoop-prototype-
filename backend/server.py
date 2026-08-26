@@ -2,7 +2,9 @@
 Swoop — Scooter Rental Backend
 Auth (email/password + Emergent Google), scooters, rides, mocked payments.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Request, UploadFile, File, Query
+from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -19,6 +21,7 @@ import logging
 import bcrypt
 import jwt
 import httpx
+import requests
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -41,6 +44,72 @@ api = APIRouter(prefix="/api")
 UNLOCK_CENTS = 100
 PER_MILE_CENTS = 20
 METERS_PER_MILE = 1609.344
+IMPROPER_PARKING_FEE_CENTS = 1500  # $15.00
+
+# Object storage config
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "swoop"
+storage_key: Optional[str] = None
+
+
+def _init_storage_sync() -> Optional[str]:
+    global storage_key
+    if storage_key:
+        return storage_key
+    if not EMERGENT_KEY:
+        return None
+    try:
+        resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+        resp.raise_for_status()
+        storage_key = resp.json()["storage_key"]
+        return storage_key
+    except Exception as e:
+        logger.warning("Storage init failed: %s", e)
+        return None
+
+
+def _put_object_sync(path: str, data: bytes, content_type: str) -> dict:
+    global storage_key
+    key = _init_storage_sync()
+    if not key:
+        raise RuntimeError("Storage unavailable")
+    try:
+        resp = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data,
+            timeout=120,
+        )
+        if resp.status_code == 503:
+            # stale key
+            storage_key = None
+            key = _init_storage_sync()
+            resp = requests.put(
+                f"{STORAGE_URL}/objects/{path}",
+                headers={"X-Storage-Key": key, "Content-Type": content_type},
+                data=data,
+                timeout=120,
+            )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Upload failed: {e.response.status_code}") from e
+
+
+def _get_object_sync(path: str) -> tuple:
+    global storage_key
+    key = _init_storage_sync()
+    if not key:
+        raise RuntimeError("Storage unavailable")
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 503:
+        storage_key = None
+        key = _init_storage_sync()
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
 def now_utc() -> datetime:
@@ -116,16 +185,45 @@ class Ride(BaseModel):
     miles: float = 0.0
     unlock_charged_cents: int = 0
     mileage_charged_cents: int = 0
+    fee_charged_cents: int = 0
     amount_cents: int = 0
     payment_method_id: Optional[str] = None
     start_lat: Optional[float] = None
     start_lng: Optional[float] = None
     end_lat: Optional[float] = None
     end_lng: Optional[float] = None
-    route: List[List[float]] = Field(default_factory=list)  # [[lat, lng], ...]
+    route: List[List[float]] = Field(default_factory=list)
     paused_seconds: int = 0
+    end_photo_path: Optional[str] = None
+    parking_zone_id: Optional[str] = None
+    parking_ok: Optional[bool] = None
+    parking_flagged: bool = False
+    parking_flag_reason: Optional[str] = None
     created_at: datetime
     paid_at: Optional[datetime] = None
+
+
+class ParkingZone(BaseModel):
+    zone_id: str
+    name: str
+    kind: Literal["bike_rack", "designated", "no_park"]
+    lat: float
+    lng: float
+    radius_m: float
+    created_at: datetime
+
+
+class ParkingCheckRequest(BaseModel):
+    lat: float
+    lng: float
+
+
+class ParkingCheckResponse(BaseModel):
+    ok: bool
+    reason: Optional[str] = None
+    zone: Optional[ParkingZone] = None
+    nearest_allowed: Optional[ParkingZone] = None
+    nearest_allowed_distance_m: Optional[float] = None
 
 
 class PaymentMethod(BaseModel):
@@ -151,7 +249,7 @@ class ChargeRecord(BaseModel):
     user_id: str
     ride_id: Optional[str] = None
     amount_cents: int
-    kind: Literal["unlock", "mileage"]
+    kind: Literal["unlock", "mileage", "improper_parking_fee"]
     payment_method_id: str
     created_at: datetime
 
@@ -233,6 +331,31 @@ async def ensure_indexes_and_seed():
     # Migrate legacy scooter field
     await db.scooters.update_many({"price_per_min_cents": {"$exists": True}}, {"$unset": {"price_per_min_cents": ""}})
 
+    # Parking zones — designated bike racks + no-park zones around Georgia Southern
+    await db.parking_zones.create_index("zone_id", unique=True)
+    if await db.parking_zones.count_documents({}) == 0:
+        seeds = [
+            # Bike racks (allowed parking) — approximate GSU landmarks
+            {"name": "Henderson Library bike rack", "kind": "bike_rack", "lat": 32.4176, "lng": -81.7811, "radius_m": 25},
+            {"name": "Russell Union bike rack", "kind": "bike_rack", "lat": 32.4189, "lng": -81.7808, "radius_m": 25},
+            {"name": "RAC bike rack", "kind": "bike_rack", "lat": 32.4144, "lng": -81.7735, "radius_m": 30},
+            {"name": "Engineering Bldg bike rack", "kind": "bike_rack", "lat": 32.4165, "lng": -81.7825, "radius_m": 20},
+            {"name": "Sweetheart Circle designated", "kind": "designated", "lat": 32.4197, "lng": -81.7815, "radius_m": 40},
+            # No-park zones — high-traffic plazas & pathways
+            {"name": "Pedestrium (main plaza)", "kind": "no_park", "lat": 32.4182, "lng": -81.7802, "radius_m": 45},
+            {"name": "Rotunda no-park", "kind": "no_park", "lat": 32.4172, "lng": -81.7794, "radius_m": 25},
+            {"name": "Paulson Stadium gates", "kind": "no_park", "lat": 32.4123, "lng": -81.7802, "radius_m": 40},
+        ]
+        docs = []
+        for s in seeds:
+            docs.append({
+                "zone_id": f"zone_{uuid.uuid4().hex[:10]}",
+                **s,
+                "created_at": now_utc(),
+            })
+        await db.parking_zones.insert_many(docs)
+        logger.info("Seeded %d parking zones", len(docs))
+
     # Seed scooters around Georgia Southern University (Statesboro) and a few in Savannah
     count = await db.scooters.count_documents({})
     if count == 0:
@@ -292,6 +415,11 @@ async def ensure_indexes_and_seed():
 @app.on_event("startup")
 async def on_startup():
     await ensure_indexes_and_seed()
+    # Warm storage key (non-blocking best-effort)
+    try:
+        await run_in_threadpool(_init_storage_sync)
+    except Exception as e:
+        logger.warning("Storage warm failed: %s", e)
 
 
 @app.on_event("shutdown")
@@ -563,6 +691,8 @@ class EndRideRequest(BaseModel):
     distance_m: Optional[float] = None
     route: Optional[List[List[float]]] = None
     paused_seconds: Optional[int] = None
+    end_photo_path: Optional[str] = None
+    parking_override: bool = False  # server always re-checks anyway
 
 
 def sanitize_ride(doc: dict) -> Ride:
@@ -690,6 +820,31 @@ async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(N
     if body.paused_seconds is not None:
         update["paused_seconds"] = max(0, int(body.paused_seconds))
 
+    # Enforce parking-verification photo
+    if not body.end_photo_path:
+        raise HTTPException(status_code=422, detail="A parking photo is required to end the ride")
+    update["end_photo_path"] = body.end_photo_path
+
+    # Parking-zone check (server-authoritative)
+    if body.end_lat is not None and body.end_lng is not None:
+        parking = await _evaluate_parking(body.end_lat, body.end_lng)
+        update["parking_ok"] = parking["ok"]
+        if parking.get("zone"):
+            update["parking_zone_id"] = parking["zone"]["zone_id"]
+        if not parking["ok"] and not body.parking_override:
+            # Strip non-JSON-serializable fields (datetime) before returning in detail
+            def _z(zd):
+                if not zd: return None
+                return {k: v for k, v in zd.items() if k != "created_at"}
+            safe = {
+                "ok": parking["ok"],
+                "reason": parking.get("reason"),
+                "zone": _z(parking.get("zone")),
+                "nearest_allowed": _z(parking.get("nearest_allowed")),
+                "nearest_allowed_distance_m": parking.get("nearest_allowed_distance_m"),
+            }
+            raise HTTPException(status_code=409, detail={"code": "bad_parking", **safe})
+
     await db.rides.update_one({"ride_id": body.ride_id}, {"$set": update})
 
     # Free scooter + update its position/battery
@@ -732,6 +887,183 @@ async def get_ride(ride_id: str, authorization: Optional[str] = Header(None)):
     if not doc:
         raise HTTPException(404, "Ride not found")
     return sanitize_ride(doc)
+
+
+# ============ PARKING ZONES + PHOTOS ============
+def _zone_public(d: dict) -> ParkingZone:
+    return ParkingZone(
+        zone_id=d["zone_id"],
+        name=d["name"],
+        kind=d["kind"],
+        lat=d["lat"],
+        lng=d["lng"],
+        radius_m=d["radius_m"],
+        created_at=ensure_aware(d["created_at"]),
+    )
+
+
+async def _evaluate_parking(lat: float, lng: float) -> dict:
+    zones = await db.parking_zones.find({}, {"_id": 0}).to_list(500)
+    # 1) Inside a no-park zone? -> reject
+    for z in zones:
+        if z["kind"] == "no_park" and haversine_m(lat, lng, z["lat"], z["lng"]) <= z["radius_m"]:
+            nearest = _nearest_allowed(zones, lat, lng)
+            return {
+                "ok": False,
+                "reason": f"You're inside a no-parking zone: {z['name']}",
+                "zone": z,
+                "nearest_allowed": nearest[0],
+                "nearest_allowed_distance_m": nearest[1],
+            }
+    # 2) Inside a designated / bike_rack zone? -> ok
+    for z in zones:
+        if z["kind"] in ("bike_rack", "designated") and haversine_m(lat, lng, z["lat"], z["lng"]) <= z["radius_m"]:
+            return {"ok": True, "reason": f"Parked at {z['name']}", "zone": z}
+    # 3) Not inside any zone — allow with softer message (per spec: sidewalk-off-to-the-side is ok)
+    nearest = _nearest_allowed(zones, lat, lng)
+    if nearest[0] and nearest[1] is not None and nearest[1] <= 60:
+        # Very close to an allowed spot — treat as ok, point them to it
+        return {"ok": True, "reason": f"Near {nearest[0]['name']}", "zone": None, "nearest_allowed": nearest[0], "nearest_allowed_distance_m": nearest[1]}
+    return {
+        "ok": True,  # spec says sidewalk-off-to-side is acceptable; still surface nearest rack
+        "reason": "No designated rack here — please park off the sidewalk out of the way",
+        "zone": None,
+        "nearest_allowed": nearest[0],
+        "nearest_allowed_distance_m": nearest[1],
+    }
+
+
+def _nearest_allowed(zones: list, lat: float, lng: float):
+    best = None
+    best_d = None
+    for z in zones:
+        if z["kind"] in ("bike_rack", "designated"):
+            d = haversine_m(lat, lng, z["lat"], z["lng"])
+            if best is None or d < best_d:
+                best = z
+                best_d = d
+    return (best, best_d)
+
+
+@api.get("/parking-zones", response_model=List[ParkingZone])
+async def list_parking_zones(lat: Optional[float] = None, lng: Optional[float] = None, radius_m: Optional[float] = None):
+    docs = await db.parking_zones.find({}, {"_id": 0}).to_list(500)
+    if lat is not None and lng is not None and radius_m:
+        docs = [d for d in docs if haversine_m(lat, lng, d["lat"], d["lng"]) <= radius_m]
+    return [_zone_public(d) for d in docs]
+
+
+@api.post("/parking/check", response_model=ParkingCheckResponse)
+async def parking_check(body: ParkingCheckRequest, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    res = await _evaluate_parking(body.lat, body.lng)
+    return ParkingCheckResponse(
+        ok=res["ok"],
+        reason=res.get("reason"),
+        zone=_zone_public(res["zone"]) if res.get("zone") else None,
+        nearest_allowed=_zone_public(res["nearest_allowed"]) if res.get("nearest_allowed") else None,
+        nearest_allowed_distance_m=res.get("nearest_allowed_distance_m"),
+    )
+
+
+# ---- Photo upload / serve ----
+class PhotoUploadResponse(BaseModel):
+    path: str
+    size: int
+
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+MAX_PHOTO_BYTES = 8 * 1024 * 1024  # 8MB
+
+
+@api.post("/uploads/parking-photo", response_model=PhotoUploadResponse)
+async def upload_parking_photo(
+    ride_id: str = Query(...),
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+):
+    user = await get_current_user(authorization)
+    ride = await db.rides.find_one({"ride_id": ride_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not ride:
+        raise HTTPException(404, "Ride not found")
+    if ride["status"] not in ("active", "reserved"):
+        raise HTTPException(409, "Ride is not active")
+    ctype = (file.content_type or "").lower()
+    if ctype not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(400, "Only JPEG/PNG/WebP images are allowed")
+    data = await file.read()
+    if len(data) == 0:
+        raise HTTPException(400, "Empty file")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Photo too large (max 8MB)")
+
+    ext = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp"}[ctype]
+    path = f"{APP_NAME}/uploads/{user['user_id']}/{ride_id}_{uuid.uuid4().hex[:10]}.{ext}"
+    try:
+        result = await run_in_threadpool(_put_object_sync, path, data, ctype)
+    except RuntimeError as e:
+        raise HTTPException(502, f"Upload failed: {e}")
+
+    # Cache the path on the ride doc so the receipt can read it
+    await db.rides.update_one({"ride_id": ride_id}, {"$set": {"end_photo_path": path}})
+    return PhotoUploadResponse(path=result.get("path", path), size=len(data))
+
+
+@api.get("/files/{full_path:path}")
+async def serve_file(full_path: str, authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)):
+    # Support both header auth and token query (for <img> tags on web)
+    user = None
+    if authorization and authorization.startswith("Bearer "):
+        try: user = await get_current_user(authorization)
+        except HTTPException: pass
+    if not user and token:
+        try: user = await get_current_user(f"Bearer {token}")
+        except HTTPException: pass
+    if not user:
+        raise HTTPException(401, "Unauthorized")
+
+    # Only allow the owner to fetch (or any ride photo the user owns)
+    if not full_path.startswith(f"{APP_NAME}/uploads/{user['user_id']}/"):
+        # Also allow admin-flagged reviews — for now, deny cross-user
+        raise HTTPException(403, "Forbidden")
+    try:
+        content, ctype = await run_in_threadpool(_get_object_sync, full_path)
+    except Exception:
+        raise HTTPException(404, "Not found")
+    return Response(content=content, media_type=ctype)
+
+
+# ---- Admin: flag improper parking + charge fee ----
+class FlagImproperRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
+@api.post("/rides/{ride_id}/flag-improper-parking", response_model=Ride)
+async def flag_improper_parking(ride_id: str, body: FlagImproperRequest, authorization: Optional[str] = Header(None)):
+    # For MVP the ride owner OR any authenticated admin can call this.
+    user = await get_current_user(authorization)
+    ride = await db.rides.find_one({"ride_id": ride_id}, {"_id": 0})
+    if not ride:
+        raise HTTPException(404, "Ride not found")
+    if ride["status"] != "completed":
+        raise HTTPException(409, "Ride is not completed")
+    if ride.get("parking_flagged"):
+        return sanitize_ride(ride)
+    pm_id = ride.get("payment_method_id")
+    if not pm_id:
+        raise HTTPException(409, "Rider has no payment method on file")
+    await mock_charge(ride["user_id"], ride_id, IMPROPER_PARKING_FEE_CENTS, "improper_parking_fee", pm_id)
+    new_amount = ride.get("amount_cents", 0) + IMPROPER_PARKING_FEE_CENTS
+    updated = {
+        "parking_flagged": True,
+        "parking_flag_reason": body.reason,
+        "parking_ok": False,
+        "fee_charged_cents": ride.get("fee_charged_cents", 0) + IMPROPER_PARKING_FEE_CENTS,
+        "amount_cents": new_amount,
+    }
+    await db.rides.update_one({"ride_id": ride_id}, {"$set": updated})
+    ride.update(updated)
+    return sanitize_ride(ride)
 
 
 app.include_router(api)

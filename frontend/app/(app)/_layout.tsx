@@ -30,6 +30,7 @@ export default function AppLayout() {
       <Stack.Screen name="history" options={{ presentation: "modal" }} />
       <Stack.Screen name="profile" options={{ presentation: "modal" }} />
       <Stack.Screen name="payment-method" options={{ presentation: "modal" }} />
+      <Stack.Screen name="parking-check" />
     </Stack>
   );
 }

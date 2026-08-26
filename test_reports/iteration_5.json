@@ -1,0 +1,43 @@
+{
+  "summary": "Backend testing for parking-verification flow on Swoop. Updated /app/backend/tests/test_swoop_backend.py so all previously passing tests (renumbered) send a dummy end_photo_path on /rides/end, and added 13 new tests covering /parking-zones (list + filter), /parking/check (no-park / bike-rack / soft-ok / auth-required), /rides/end (missing-photo 422, no-park 409 + parking_override, bike-rack ok), /rides/{id}/flag-improper-parking (+$15 & idempotent), /uploads/parking-photo (rejects non-image, accepts JPEG, stores on ride), and /files/{path} auth (401 no auth, 403 cross-user). All 33/33 tests PASS after fixing one real bug I found.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/rides/end",
+        "issue": "500 Internal Server Error when parking-check fails (no-park zone) because HTTPException detail contained parking_zones docs with `created_at` datetime → 'Object of type datetime is not JSON serializable'. FIXED in /app/backend/server.py end_ride: strip `created_at` from zone/nearest_allowed dicts before raising HTTPException(409, detail=...). After fix, endpoint correctly returns 409 with detail.code='bad_parking' and JSON-safe zone info.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_swoop_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Review /app/backend/server.py end_ride serialization fix (strip datetime from HTTPException detail). Consider a shared serialize helper for parking zones so /parking/check and /rides/end use the same shape.",
+    "Object Storage was reachable in this env — /uploads/parking-photo returned 200 with a valid JPEG; if it becomes unreachable later, the tests already pytest.skip on 502."
+  ],
+  "critical_code_review_comments": [
+    "server.py end_ride raised HTTPException with raw MongoDB parking_zones dicts (still contained `created_at`) — Pydantic/FastAPI could not encode the datetime in the JSON error body. Fixed by whitelisting fields. Prefer a `zone_public_dict()` helper reused by /parking/check and /rides/end.",
+    "server.py /rides/end: the parking check runs AFTER photo-required check but BEFORE await db.rides.update_one — good (ride stays 'active' on 409). Verified by test_20 (active ride still present after 409, then completes with parking_override=True).",
+    "Flag-improper-parking idempotency: relies on `parking_flagged` flag returning early — verified. Second call returns 200 with unchanged amount/fee.",
+    "Test suite structure: TestSwoopFullFlow uses module-scoped fresh_user shared across all tests in the class via xdist loadscope (one worker per class). New TestParkingZonesAndCheck and TestUploadAndFilesServe classes were added so they parallelize on the second worker; upload tests create their own fresh users/rides to stay independent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_swoop_backend.py",
+    "/app/backend/server.py"
+  ],
+  "success_rate": {"backend": "100% (33/33)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "None persistent. Each run signs up unique users (ridertest+..., parktest+..., upload1+..., upload2+..., filesA+..., other+...) and creates test rides + one Visa card per user. Parking zones auto-seeded by backend on startup (8 zones).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_swoop_backend.py -v` (respects pytest.ini's -n 2 --dist loadscope). Coverage: 20 legacy flow tests (payments, ride lifecycle, route/paused_seconds) + 13 new parking-flow tests. TestSwoopFullFlow now has tests 00–22 plus test_99 (last, wipes cards). If Object Storage becomes unreachable, test_upload_valid_jpeg_and_serve auto-skips on 502. The server-side JSON-serialization fix in end_ride is required for test_20/test_21 to pass — do not revert.",
+  "rca_of_issue": "RCA (end_ride 500 on no-park): _evaluate_parking() returns dicts sourced directly from db.parking_zones.find({}, {'_id': 0}) — those still carry `created_at: datetime`. Line 835 did `HTTPException(status_code=409, detail={'code': 'bad_parking', **parking})`, so FastAPI/Starlette JSONResponse tried to encode a datetime deep inside detail.zone/nearest_allowed → TypeError → 500 (masking the intended 409). Reproduction: POST /api/rides/end with end_lat=32.4172, end_lng=-81.7794 (Rotunda no-park), parking_override=false → 500. Fix: build a JSON-safe copy of zone/nearest_allowed (drop created_at) inside end_ride before raising the 409. Verified with test_20 (returns 409 with detail.code='bad_parking', zone.kind='no_park', nearest_allowed=bike_rack). Alternative long-term fix: strip created_at inside _evaluate_parking or introduce a shared _zone_dict() helper."
+}
