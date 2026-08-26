@@ -107,7 +107,16 @@ export default function Profile() {
           <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
 
-        <Text style={styles.footer}>Swoop v1.0 · Made for Georgia Southern</Text>
+        <Pressable
+          testID="dev-footer"
+          onLongPress={async () => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            router.push("/(app)/dev-ble");
+          }}
+          delayLongPress={800}
+        >
+          <Text style={styles.footer}>Swoop v1.0 · Made for Georgia Southern</Text>
+        </Pressable>
       </ScrollView>
     </View>
   );

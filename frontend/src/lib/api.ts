@@ -192,6 +192,25 @@ export const api = {
   flagImproperParking: (ride_id: string, reason: string) =>
     request<Ride>(`/rides/${ride_id}/flag-improper-parking`, { method: "POST", body: JSON.stringify({ reason }) }),
 
+  // BLE unlock token — HMAC-signed, short-lived, single-use
+  mintBleToken: (ride_id: string) =>
+    request<{
+      token_id: string;
+      ride_id: string;
+      scooter_code: string;
+      nonce_hex: string;
+      signature_hex: string;
+      issued_at: string;
+      expires_at: string;
+      ttl_seconds: number;
+      payload_hex: string;
+    }>(`/rides/${ride_id}/ble-token`, { method: "POST" }),
+  bleAck: (ride_id: string, token_id: string, success: boolean, detail?: string) =>
+    request<{ ok: boolean; already?: boolean }>(`/rides/${ride_id}/ble-ack`, {
+      method: "POST",
+      body: JSON.stringify({ token_id, success, detail }),
+    }),
+
   // Photo upload — multipart. Split by platform per Object Storage playbook.
   uploadParkingPhoto: async (ride_id: string, uri: string, contentType = "image/jpeg"): Promise<{ path: string; size: number }> => {
     const token = await getStoredToken();

@@ -61,6 +61,14 @@
           "resizeMode": "contain",
           "backgroundColor": "#2E7BFF"
         }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "bluetoothAlwaysPermission": "Connect to a scooter to unlock and end your ride"
+        }
       ]
     ],
     "experiments": {
