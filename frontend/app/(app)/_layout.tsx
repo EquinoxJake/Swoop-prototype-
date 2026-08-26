@@ -2,10 +2,11 @@ import { Stack, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { useAuth } from "@/src/lib/auth";
-import { colors } from "@/src/lib/theme";
+import { useTheme } from "@/src/lib/theme-context";
 
 export default function AppLayout() {
   const { user, loading } = useAuth();
+  const { colors } = useTheme();
   const router = useRouter();
 
   useEffect(() => {
@@ -21,7 +22,7 @@ export default function AppLayout() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false, animation: "slide_from_right" }}>
+    <Stack screenOptions={{ headerShown: false, animation: "slide_from_right", contentStyle: { backgroundColor: colors.surface } }}>
       <Stack.Screen name="map" />
       <Stack.Screen name="scan" options={{ presentation: "modal" }} />
       <Stack.Screen name="ride" />

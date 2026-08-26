@@ -21,7 +21,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#F3A712"
+        "backgroundColor": "#2E7BFF"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.emergent.scootpaygo.pume99",
@@ -59,7 +59,7 @@
           "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#F3A712"
+          "backgroundColor": "#2E7BFF"
         }
       ]
     ],

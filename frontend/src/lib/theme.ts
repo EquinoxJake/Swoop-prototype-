@@ -1,33 +1,96 @@
-// Swoop design tokens (from /app/design_guidelines.json)
-export const colors = {
-  surface: "#F7F5F0",
-  onSurface: "#1A1A1A",
+// Swoop design tokens — supports light + dark mode
+export type ThemeColors = {
+  surface: string;
+  onSurface: string;
+  surfaceSecondary: string;
+  onSurfaceSecondary: string;
+  surfaceTertiary: string;
+  onSurfaceTertiary: string;
+  surfaceInverse: string;
+  onSurfaceInverse: string;
+  brand: string;
+  brandPrimary: string;
+  onBrandPrimary: string;
+  brandSecondary: string;
+  onBrandSecondary: string;
+  brandTertiary: string;
+  onBrandTertiary: string;
+  success: string;
+  onSuccess: string;
+  warning: string;
+  onWarning: string;
+  error: string;
+  onError: string;
+  info: string;
+  onInfo: string;
+  border: string;
+  borderStrong: string;
+  divider: string;
+  muted: string;
+};
+
+export const lightColors: ThemeColors = {
+  surface: "#F5F7FB",
+  onSurface: "#0F172A",
   surfaceSecondary: "#FFFFFF",
-  onSurfaceSecondary: "#1A1A1A",
-  surfaceTertiary: "#EAE6DF",
-  onSurfaceTertiary: "#1A1A1A",
-  surfaceInverse: "#222222",
+  onSurfaceSecondary: "#0F172A",
+  surfaceTertiary: "#EDF1F7",
+  onSurfaceTertiary: "#0F172A",
+  surfaceInverse: "#0F172A",
   onSurfaceInverse: "#FFFFFF",
-  brand: "#F3A712",
-  brandPrimary: "#F3A712",
-  onBrandPrimary: "#111111",
+  brand: "#2E7BFF",
+  brandPrimary: "#2E7BFF",
+  onBrandPrimary: "#FFFFFF",
   brandSecondary: "#20B26C",
   onBrandSecondary: "#FFFFFF",
-  brandTertiary: "#FCE5BA",
-  onBrandTertiary: "#734F08",
+  brandTertiary: "#DBE8FF",
+  onBrandTertiary: "#123A99",
   success: "#20B26C",
   onSuccess: "#FFFFFF",
   warning: "#E69109",
   onWarning: "#FFFFFF",
   error: "#D9381E",
   onError: "#FFFFFF",
-  info: "#1A1A1A",
+  info: "#0F172A",
   onInfo: "#FFFFFF",
-  border: "#EAE6DF",
-  borderStrong: "#D1C9BC",
-  divider: "#EAE6DF",
-  muted: "#6B6B6B",
+  border: "#E4E9F2",
+  borderStrong: "#CBD3E1",
+  divider: "#E4E9F2",
+  muted: "#6B7280",
 };
+
+export const darkColors: ThemeColors = {
+  surface: "#0B0F17",
+  onSurface: "#F5F7FA",
+  surfaceSecondary: "#131824",
+  onSurfaceSecondary: "#F5F7FA",
+  surfaceTertiary: "#1B2130",
+  onSurfaceTertiary: "#F5F7FA",
+  surfaceInverse: "#F5F7FA",
+  onSurfaceInverse: "#0B0F17",
+  brand: "#4C93FF",
+  brandPrimary: "#4C93FF",
+  onBrandPrimary: "#0B0F17",
+  brandSecondary: "#3AD48D",
+  onBrandSecondary: "#0B0F17",
+  brandTertiary: "#1E3660",
+  onBrandTertiary: "#B7D2FF",
+  success: "#3AD48D",
+  onSuccess: "#0B0F17",
+  warning: "#F0A93A",
+  onWarning: "#0B0F17",
+  error: "#F1594A",
+  onError: "#FFFFFF",
+  info: "#F5F7FA",
+  onInfo: "#0B0F17",
+  border: "#232A3A",
+  borderStrong: "#333A4B",
+  divider: "#232A3A",
+  muted: "#8B929F",
+};
+
+// Backwards-compat default (used only where a Provider isn't available yet)
+export const colors = lightColors;
 
 export const spacing = {
   xs: 4,
@@ -44,11 +107,6 @@ export const radius = {
   md: 16,
   lg: 24,
   pill: 999,
-};
-
-export const font = {
-  display: "Outfit_600SemiBold", // fallback to system if not loaded
-  text: "System",
 };
 
 export const shadow = {
@@ -68,8 +126,8 @@ export const shadow = {
   },
 };
 
-export function batteryColor(pct: number): string {
-  if (pct >= 60) return colors.success;
-  if (pct >= 30) return colors.warning;
-  return colors.error;
+export function batteryColor(pct: number, c: ThemeColors = lightColors): string {
+  if (pct >= 60) return c.success;
+  if (pct >= 30) return c.warning;
+  return c.error;
 }

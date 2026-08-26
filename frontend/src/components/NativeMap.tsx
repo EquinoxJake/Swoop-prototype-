@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { Ionicons } from "@expo/vector-icons";
 import { Scooter } from "@/src/lib/api";
-import { colors, radius, shadow } from "@/src/lib/theme";
+import { radius, shadow } from "@/src/lib/theme";
+import { useTheme } from "@/src/lib/theme-context";
 
 export const DEFAULT_REGION = {
   latitude: 32.4171,
@@ -19,6 +20,8 @@ type Props = {
 };
 
 export default function NativeMap({ scooters, onPinPress, mapRef }: Props) {
+  const { colors, isDark } = useTheme();
+  const pinStyles = useMemo(() => makePinStyles(colors), [colors]);
   return (
     <MapView
       ref={mapRef}
@@ -26,6 +29,7 @@ export default function NativeMap({ scooters, onPinPress, mapRef }: Props) {
       initialRegion={DEFAULT_REGION}
       showsUserLocation
       showsMyLocationButton={false}
+      userInterfaceStyle={isDark ? "dark" : "light"}
     >
       {scooters.map((s) => (
         <Marker
@@ -44,12 +48,12 @@ export default function NativeMap({ scooters, onPinPress, mapRef }: Props) {
   );
 }
 
-const pinStyles = StyleSheet.create({
+const makePinStyles = (c: any) => StyleSheet.create({
   pin: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: colors.brand,
+    backgroundColor: c.brand,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: radius.pill,
@@ -57,7 +61,7 @@ const pinStyles = StyleSheet.create({
     borderColor: "#fff",
     ...shadow.card,
   },
-  pinText: { color: colors.onBrandPrimary, fontWeight: "800", fontSize: 12 },
+  pinText: { color: c.onBrandPrimary, fontWeight: "800", fontSize: 12 },
 });
 
 export const IS_NATIVE_MAP = true;
