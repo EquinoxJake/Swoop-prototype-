@@ -3,10 +3,11 @@ from typing import Optional
 import uuid
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field
-import httpx
+import jwt
 
-from .core.config import logger
+from .core.config import GOOGLE_CLIENT_IDS, logger
 from .core.db import db
 from .core.geo import now_utc
 from .core.security import (
@@ -37,8 +38,28 @@ class AuthResponse(BaseModel):
     user: UserPublic
 
 
-class GoogleSessionRequest(BaseModel):
-    session_id: str
+class GoogleSignInRequest(BaseModel):
+    id_token: str
+
+
+# Google's public signing keys; PyJWKClient caches them between requests.
+_google_jwks = jwt.PyJWKClient("https://www.googleapis.com/oauth2/v3/certs")
+
+
+def verify_google_id_token(id_token: str) -> dict:
+    """Check the ID token was signed by Google for one of our client IDs. Returns its claims."""
+    if not GOOGLE_CLIENT_IDS:
+        raise HTTPException(503, "Google sign-in is not configured")
+    try:
+        key = _google_jwks.get_signing_key_from_jwt(id_token).key
+        claims = jwt.decode(id_token, key, algorithms=["RS256"], audience=GOOGLE_CLIENT_IDS)
+    except jwt.PyJWTError as e:
+        raise HTTPException(401, f"Invalid Google token: {e}")
+    if claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+        raise HTTPException(401, "Invalid Google token issuer")
+    if not claims.get("email") or not claims.get("email_verified"):
+        raise HTTPException(401, "Google account email is not verified")
+    return claims
 
 
 @router.get("/")
@@ -74,27 +95,13 @@ async def login(body: LoginRequest):
     return AuthResponse(session_token=token, user=user_public(user))
 
 
-@router.post("/auth/session", response_model=AuthResponse)
-async def google_session(body: GoogleSessionRequest):
-    """Exchange Emergent Google session_id for our session_token."""
-    try:
-        async with httpx.AsyncClient(timeout=15) as h:
-            resp = await h.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-                headers={"X-Session-ID": body.session_id},
-            )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid Google session")
-        data = resp.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Google session exchange failed: %s", e)
-        raise HTTPException(status_code=401, detail="Google session exchange failed")
-
-    email = (data.get("email") or "").lower()
-    if not email:
-        raise HTTPException(status_code=401, detail="No email in Google session")
+@router.post("/auth/google", response_model=AuthResponse)
+async def google_sign_in(body: GoogleSignInRequest):
+    """Exchange a Google ID token (from the app's Google sign-in) for our session_token."""
+    # Key fetch is a blocking HTTP call on cache miss, so keep it off the event loop
+    data = await run_in_threadpool(verify_google_id_token, body.id_token)
+    email = data["email"].lower()
+    logger.info("Google sign-in for %s", email)
     user = await db.users.find_one({"email": email})
     if not user:
         user_id = f"user_{uuid.uuid4().hex[:12]}"

@@ -139,8 +139,8 @@ export const api = {
   signup: (email: string, password: string, name?: string) =>
     request<AuthResponse>("/auth/signup", { method: "POST", body: JSON.stringify({ email, password, name }) }, false),  login: (email: string, password: string) =>
     request<AuthResponse>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }, false),
-  googleSession: (session_id: string) =>
-    request<AuthResponse>("/auth/session", { method: "POST", body: JSON.stringify({ session_id }) }, false),
+  googleSignIn: (id_token: string) =>
+    request<AuthResponse>("/auth/google", { method: "POST", body: JSON.stringify({ id_token }) }, false),
   me: () => request<User>("/auth/me"),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
 

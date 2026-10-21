@@ -15,6 +15,8 @@ MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ.get("JWT_SECRET", "swoop-dev-secret-change-me")
 JWT_ALG = "HS256"
+# OAuth client IDs from Google Cloud Console (web, iOS, Android), comma-separated
+GOOGLE_CLIENT_IDS = [c.strip() for c in os.environ.get("GOOGLE_CLIENT_IDS", "").split(",") if c.strip()]
 
 # Pricing (cents)
 UNLOCK_CENTS = 100
