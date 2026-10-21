@@ -75,10 +75,7 @@ export default function MapScreen() {
   }, []);
 
   useEffect(() => {
-    if (activeRide) {
-      if (activeRide.status === "awaiting_payment") router.replace(`/(app)/receipt?ride_id=${activeRide.ride_id}`);
-      else router.replace(`/(app)/ride?ride_id=${activeRide.ride_id}`);
-    }
+    if (activeRide) router.replace(`/(app)/ride?ride_id=${activeRide.ride_id}`);
   }, [activeRide, router]);
 
   const onPinPress = (s: Scooter) => {
