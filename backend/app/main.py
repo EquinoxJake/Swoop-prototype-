@@ -2,7 +2,7 @@
 from fastapi import APIRouter, FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from . import auth, ble, parking, payments, rides, scooters, uploads
+from . import auth, ble, parking, payments, review, rides, scooters, uploads
 from .core.db import client, ensure_indexes_and_seed
 
 app = FastAPI(title="Swoop API")
@@ -19,7 +19,7 @@ async def on_shutdown():
 
 
 api = APIRouter(prefix="/api")
-for module in (auth, scooters, payments, rides, parking, uploads, ble):
+for module in (auth, scooters, payments, rides, parking, uploads, ble, review):
     api.include_router(module.router)
 app.include_router(api)
 

@@ -15,7 +15,7 @@ from .core.security import get_current_user
 router = APIRouter()
 
 
-def _disk_path(path: str) -> Path:
+def disk_path(path: str) -> Path:
     """Map a stored path to a file under UPLOAD_DIR, refusing anything that escapes it (e.g. '..')."""
     full = (UPLOAD_DIR / path).resolve()
     if not full.is_relative_to(UPLOAD_DIR):
@@ -60,7 +60,7 @@ async def upload_parking_photo(
 
     ext = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp"}[ctype]
     path = f"{APP_NAME}/uploads/{user['user_id']}/{ride_id}_{uuid.uuid4().hex[:10]}.{ext}"
-    await run_in_threadpool(_write_file_sync, _disk_path(path), data)
+    await run_in_threadpool(_write_file_sync, disk_path(path), data)
 
     # Cache the path on the ride doc so the receipt can read it
     await db.rides.update_one({"ride_id": ride_id}, {"$set": {"end_photo_path": path}})
@@ -81,8 +81,8 @@ async def serve_file(full_path: str, authorization: Optional[str] = Header(None)
         raise HTTPException(401, "Unauthorized")
 
     # Only allow the owner to fetch their own photos (admin review comes later)
-    own_dir = _disk_path(f"{APP_NAME}/uploads/{user['user_id']}")
-    full = _disk_path(full_path)
+    own_dir = disk_path(f"{APP_NAME}/uploads/{user['user_id']}")
+    full = disk_path(full_path)
     if not full.is_relative_to(own_dir):
         raise HTTPException(403, "Forbidden")
     if not full.is_file():

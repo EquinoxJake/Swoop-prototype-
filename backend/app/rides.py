@@ -4,10 +4,11 @@ from typing import List, Literal, Optional
 import math
 import uuid
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .core.config import IMPROPER_PARKING_FEE_CENTS, METERS_PER_MILE, PER_MILE_CENTS, UNLOCK_CENTS
+from . import review
+from .core.config import ADMIN_EMAILS, METERS_PER_MILE, PER_MILE_CENTS, UNLOCK_CENTS
 from .core.db import db
 from .core.geo import ensure_aware, now_utc
 from .core.security import get_current_user
@@ -44,6 +45,8 @@ class Ride(BaseModel):
     parking_ok: Optional[bool] = None
     parking_flagged: bool = False
     parking_flag_reason: Optional[str] = None
+    ai_parking: Optional[dict] = None  # {placement, reason} from the photo check
+    review_status: Optional[Literal["needs_check", "ai_ok", "approved", "flagged"]] = None
     created_at: datetime
     paid_at: Optional[datetime] = None
 
@@ -146,7 +149,7 @@ async def start_ride(body: StartRideRequest, authorization: Optional[str] = Head
 
 
 @router.post("/rides/end", response_model=Ride)
-async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(None)):
+async def end_ride(body: EndRideRequest, background_tasks: BackgroundTasks, authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
     ride = await db.rides.find_one({"ride_id": body.ride_id, "user_id": user["user_id"]}, {"_id": 0})
     if not ride:
@@ -233,6 +236,9 @@ async def end_ride(body: EndRideRequest, authorization: Optional[str] = Header(N
         scooter_updates["battery"] = max(5, scooter["battery"] - max(1, minutes))
     await db.scooters.update_one({"scooter_id": ride["scooter_id"]}, {"$set": scooter_updates})
 
+    # AI photo check + Discord DM to admins, after the response is sent
+    background_tasks.add_task(review.send_for_review, body.ride_id)
+
     ride.update(update)
     return sanitize_ride(ride)
 
@@ -267,27 +273,8 @@ async def get_ride(ride_id: str, authorization: Optional[str] = Header(None)):
 
 @router.post("/rides/{ride_id}/flag-improper-parking", response_model=Ride)
 async def flag_improper_parking(ride_id: str, body: FlagImproperRequest, authorization: Optional[str] = Header(None)):
-    # For MVP the ride owner OR any authenticated admin can call this.
-    await get_current_user(authorization)
-    ride = await db.rides.find_one({"ride_id": ride_id}, {"_id": 0})
-    if not ride:
-        raise HTTPException(404, "Ride not found")
-    if ride["status"] != "completed":
-        raise HTTPException(409, "Ride is not completed")
-    if ride.get("parking_flagged"):
-        return sanitize_ride(ride)
-    pm_id = ride.get("payment_method_id")
-    if not pm_id:
-        raise HTTPException(409, "Rider has no payment method on file")
-    await mock_charge(ride["user_id"], ride_id, IMPROPER_PARKING_FEE_CENTS, "improper_parking_fee", pm_id)
-    new_amount = ride.get("amount_cents", 0) + IMPROPER_PARKING_FEE_CENTS
-    updated = {
-        "parking_flagged": True,
-        "parking_flag_reason": body.reason,
-        "parking_ok": False,
-        "fee_charged_cents": ride.get("fee_charged_cents", 0) + IMPROPER_PARKING_FEE_CENTS,
-        "amount_cents": new_amount,
-    }
-    await db.rides.update_one({"ride_id": ride_id}, {"$set": updated})
-    ride.update(updated)
-    return sanitize_ride(ride)
+    # Admins only (ADMIN_EMAILS); the usual path is the Discord "Bad parking" button
+    user = await get_current_user(authorization)
+    if user["email"].lower() not in ADMIN_EMAILS:
+        raise HTTPException(403, "Admins only")
+    return sanitize_ride(await review.flag_ride(ride_id, body.reason))

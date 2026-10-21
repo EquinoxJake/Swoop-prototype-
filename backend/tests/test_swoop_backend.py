@@ -43,12 +43,11 @@ def auth_headers(fresh_user):
 
 
 def _pick_available_scooter(api_client):
-    r = api_client.get(f"{API}/scooters")
-    assert r.status_code == 200
-    for s in r.json():
-        if s["status"] == "available":
-            return s
-    pytest.skip("No available scooter to test with")
+    # Seed a scooter at a random spot so parallel test workers never reserve the same one
+    lat, lng = 40 + uuid.uuid4().int % 1000 / 100, -100 - uuid.uuid4().int % 1000 / 100
+    r = api_client.post(f"{API}/scooters/seed-near", json={"lat": lat, "lng": lng, "radius_m": 50, "count": 1})
+    assert r.status_code == 200, r.text
+    return r.json()[0]
 
 
 class TestSwoopFullFlow:
@@ -356,7 +355,17 @@ class TestSwoopFullFlow:
         base_amount = before["amount_cents"]
         base_fee = before.get("fee_charged_cents", 0)
 
+        # Riders can't charge the fee; only admins (ADMIN_EMAILS must include admin@swoop-test.com)
         r = api_client.post(f"{API}/rides/{rid}/flag-improper-parking", headers=auth_headers,
+                            json={"reason": "Parked in walkway blocking pedestrians"})
+        assert r.status_code == 403, r.text
+        creds = {"email": "admin@swoop-test.com", "password": "adminpass1"}
+        r = api_client.post(f"{API}/auth/signup", json=creds)
+        if r.status_code == 409:
+            r = api_client.post(f"{API}/auth/login", json=creds)
+        admin_headers = {"Authorization": f"Bearer {r.json()['session_token']}", "Content-Type": "application/json"}
+
+        r = api_client.post(f"{API}/rides/{rid}/flag-improper-parking", headers=admin_headers,
                             json={"reason": "Parked in walkway blocking pedestrians"})
         assert r.status_code == 200, r.text
         ride = r.json()
@@ -366,7 +375,7 @@ class TestSwoopFullFlow:
         assert ride["amount_cents"] == base_amount + 1500
 
         # Idempotent: second call must NOT double-charge
-        r2 = api_client.post(f"{API}/rides/{rid}/flag-improper-parking", headers=auth_headers,
+        r2 = api_client.post(f"{API}/rides/{rid}/flag-improper-parking", headers=admin_headers,
                              json={"reason": "second call"})
         assert r2.status_code == 200, r2.text
         ride2 = r2.json()
@@ -476,10 +485,7 @@ class TestUploadAndFilesServe:
                              json={"number": "4242424242424242", "exp_month": 12, "exp_year": 2030, "cvc": "123"})
         assert cr.status_code == 200, cr.text
         # Reserve + start
-        scooters = api_client.get(f"{API}/scooters").json()
-        scooter = next((s for s in scooters if s["status"] == "available"), None)
-        if not scooter:
-            pytest.skip("no scooter")
+        scooter = _pick_available_scooter(api_client)
         rv = api_client.post(f"{API}/rides/reserve", headers=headers, json={"scooter_code": scooter["code"]})
         assert rv.status_code == 200, rv.text
         rid = rv.json()["ride_id"]
