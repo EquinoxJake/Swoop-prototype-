@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
 
 from .core.config import PER_MILE_CENTS, UNLOCK_CENTS
 from .core.db import db
@@ -75,12 +76,12 @@ async def seed_scooters_near(body: SeedNearRequest):
             if 9000 <= n < 100000 and n >= max_code:
                 max_code = n + 1
     new_docs = []
+    next_code = max_code
     for i in range(need):
         lat = body.lat + rng.uniform(-dlat, dlat)
         lng = body.lng + rng.uniform(-dlng, dlng)
-        new_docs.append({
+        doc = {
             "scooter_id": f"scoot_{uuid.uuid4().hex[:10]}",
-            "code": f"SW-{max_code + i}",
             "lat": lat,
             "lng": lng,
             "battery": rng.randint(40, 100),
@@ -89,8 +90,16 @@ async def seed_scooters_near(body: SeedNearRequest):
             "price_per_mile_cents": PER_MILE_CENTS,
             "unlock_fee_cents": UNLOCK_CENTS,
             "created_at": now_utc(),
-        })
-    if new_docs:
-        await db.scooters.insert_many(new_docs)
+        }
+        # A concurrent request may take the same code; skip to the next free one
+        while True:
+            doc["code"] = f"SW-{next_code}"
+            next_code += 1
+            try:
+                await db.scooters.insert_one(doc)
+                break
+            except DuplicateKeyError:
+                continue
+        new_docs.append(doc)
     all_nearby = nearby + [{k: v for k, v in d.items() if k != "_id"} for d in new_docs]
     return [Scooter(**d) for d in all_nearby]
