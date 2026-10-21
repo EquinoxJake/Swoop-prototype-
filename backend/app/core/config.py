@@ -23,3 +23,5 @@ METERS_PER_MILE = 1609.344
 IMPROPER_PARKING_FEE_CENTS = 1500  # $15.00
 
 APP_NAME = "swoop"
+# Parking photos are saved here. Back this folder up; it is the only copy.
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or BACKEND_DIR / "uploads").resolve()

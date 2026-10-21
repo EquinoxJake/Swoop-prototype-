@@ -529,8 +529,6 @@ class TestUploadAndFilesServe:
         files = {"file": ("park.jpg", jpeg_bytes, "image/jpeg")}
         r2 = s.post(f"{API}/uploads/parking-photo", params={"ride_id": rid},
                     headers={"Authorization": f"Bearer {token}"}, files=files)
-        if r2.status_code == 502:
-            pytest.skip(f"Object storage unavailable: {r2.text}")
         assert r2.status_code == 200, r2.text
         body = r2.json()
         assert "path" in body and "size" in body
@@ -555,9 +553,15 @@ class TestUploadAndFilesServe:
         cross = requests.get(f"{API}/files/{path}", headers={"Authorization": f"Bearer {token2}"})
         assert cross.status_code == 403, cross.text
 
-        # Own fetch — may be 200 or 404 depending on storage
+        # Own fetch returns the exact bytes
         own = requests.get(f"{API}/files/{path}", headers={"Authorization": f"Bearer {token}"})
-        assert own.status_code in (200, 404), f"own fetch failed: {own.status_code} {own.text}"
+        assert own.status_code == 200, f"own fetch failed: {own.status_code} {own.text}"
+        assert own.content == jpeg_bytes
+
+        # Path traversal out of the user's folder → 403
+        sneaky = f"swoop/uploads/{user_id}/..%2F..%2F..%2F..%2Fapp%2Fcore%2Fconfig.py"
+        trav = requests.get(f"{API}/files/{sneaky}", headers={"Authorization": f"Bearer {token}"})
+        assert trav.status_code == 403, trav.text
 
     def test_files_forbidden_for_other_user_path(self, api_client):
         ts = int(time.time() * 1000)
