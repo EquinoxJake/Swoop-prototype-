@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import * as WebBrowser from "expo-web-browser";
 import * as Google from "expo-auth-session/providers/google";
+import { Platform } from "react-native";
 import { api, setToken, getToken, User } from "./api";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -11,6 +12,15 @@ const googleClientIds = {
   iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
   androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
 };
+const googleConfigured = !!Platform.select({
+  web: googleClientIds.webClientId,
+  ios: googleClientIds.iosClientId,
+  android: googleClientIds.androidClientId,
+});
+// The Google hook throws (blank app) when this platform's client ID is missing, so only use it when set
+const useGooglePrompt = googleConfigured
+  ? () => Google.useIdTokenAuthRequest(googleClientIds)[2]
+  : () => null;
 
 type AuthState = {
   user: User | null;
@@ -27,7 +37,7 @@ const AuthCtx = createContext<AuthState | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [, , promptGoogle] = Google.useIdTokenAuthRequest(googleClientIds);
+  const promptGoogle = useGooglePrompt();
 
   // On mount: restore an existing session
   useEffect(() => {
@@ -64,6 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Google returns an ID token; the backend verifies it and gives us our own session token
   const signInWithGoogle = async () => {
+    if (!promptGoogle) throw new Error("Google sign-in isn't set up yet");
     const result = await promptGoogle();
     if (result.type !== "success") throw new Error("Google sign-in was cancelled");
     const idToken = result.params.id_token;
